@@ -287,6 +287,47 @@ class BasicToolRegistryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("World", payload["result"]["content"])
         self.assertNotIn("ignore_me()", payload["result"]["content"])
 
+    async def test_web_request_tool_supports_non_ascii_url_query(self) -> None:
+        registry = ToolRegistry([WebRequestTool(allow_private_network=True)])
+        seen_path: dict[str, str] = {}
+
+        class RecordingHandler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                seen_path["value"] = self.path
+                body = "ok".encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args: object) -> None:
+                del format, args
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), RecordingHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        try:
+            url = f"http://127.0.0.1:{server.server_port}/s?wd=新闻&tn=news"
+            result = await registry.execute(
+                ToolCall(
+                    id="call_web_non_ascii_url",
+                    name="fetch_web_page",
+                    arguments=json.dumps({"url": url}, ensure_ascii=False),
+                )
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+        payload = json.loads(result.content)
+        self.assertTrue(payload["ok"])
+        self.assertEqual("/s?wd=%E6%96%B0%E9%97%BB&tn=news", seen_path["value"])
+        self.assertEqual(url, payload["result"]["requested_url"])
+        self.assertIn("%E6%96%B0%E9%97%BB", payload["result"]["url"])
+
     async def test_web_request_tool_rejects_binary_content(self) -> None:
         registry = ToolRegistry([WebRequestTool(allow_private_network=True)])
         png_header = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"

@@ -52,14 +52,27 @@ class WebRequestTool(BaseTool):
         if not url:
             raise ValueError("url is required")
 
-        _validate_web_url(url, allow_private_network=self.allow_private_network)
+        normalized_url = _normalize_web_url(url)
+        _validate_web_url(normalized_url, allow_private_network=self.allow_private_network)
 
         timeout = _read_positive_float(arguments.get("timeout", 20), name="timeout")
         max_chars = _read_positive_int(arguments.get("max_chars", 4000), name="max_chars")
 
-        return await asyncio.to_thread(self._fetch_web_page, url, timeout, max_chars)
+        return await asyncio.to_thread(
+            self._fetch_web_page,
+            url,
+            normalized_url,
+            timeout,
+            max_chars,
+        )
 
-    def _fetch_web_page(self, url: str, timeout: float, max_chars: int) -> dict[str, Any]:
+    def _fetch_web_page(
+        self,
+        requested_url: str,
+        url: str,
+        timeout: float,
+        max_chars: int,
+    ) -> dict[str, Any]:
         http_request = request.Request(
             url=url,
             headers={"User-Agent": "EchoBot/1.0"},
@@ -87,7 +100,7 @@ class WebRequestTool(BaseTool):
                 content, text_truncated = _truncate_text(text, max_chars)
 
                 return {
-                    "requested_url": url,
+                    "requested_url": requested_url,
                     "url": final_url,
                     "status": response.status,
                     "content_type": content_type,
@@ -142,6 +155,37 @@ def _validate_web_url(url: str, *, allow_private_network: bool) -> None:
 
     if not allow_private_network:
         _validate_public_hostname(parsed_url.hostname)
+
+
+def _normalize_web_url(url: str) -> str:
+    parsed_url = parse.urlsplit(url)
+    if not parsed_url.hostname:
+        return url
+
+    username = parsed_url.username
+    password = parsed_url.password
+    userinfo = ""
+    if username is not None:
+        userinfo = parse.quote(username, safe="")
+        if password is not None:
+            userinfo += f":{parse.quote(password, safe='')}"
+        userinfo += "@"
+
+    hostname = parsed_url.hostname.encode("idna").decode("ascii")
+    if ":" in hostname and not hostname.startswith("["):
+        hostname = f"[{hostname}]"
+
+    netloc = f"{userinfo}{hostname}"
+    if parsed_url.port is not None:
+        netloc = f"{netloc}:{parsed_url.port}"
+
+    path = parse.quote(parsed_url.path, safe="/:@!$&'()*+,;=-._~%")
+    query = parse.quote(parsed_url.query, safe="/?:@!$&'()*+,;=-._~%[]")
+    fragment = parse.quote(parsed_url.fragment, safe="/?:@!$&'()*+,;=-._~%[]")
+
+    return parse.urlunsplit(
+        (parsed_url.scheme, netloc, path, query, fragment),
+    )
 
 
 def _validate_public_hostname(hostname: str) -> None:
