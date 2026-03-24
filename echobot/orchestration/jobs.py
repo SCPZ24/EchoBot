@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 
+from ..models import MessageContent, normalize_message_content
 from ..runtime.sessions import ChatSession
 
 
@@ -18,6 +19,7 @@ class OrchestratedTurnResult:
     response_text: str
     delegated: bool
     completed: bool
+    response_content: MessageContent = ""
     job_id: str | None = None
     status: str = "completed"
     role_name: str = "default"
@@ -37,6 +39,7 @@ class ConversationJob:
     updated_at: str
     trace_run_id: str | None = None
     final_response: str = ""
+    final_response_content: MessageContent = ""
     error: str = ""
     steps: int = 0
 
@@ -86,6 +89,7 @@ class ConversationJobStore:
         job_id: str,
         *,
         final_response: str,
+        final_response_content: MessageContent = "",
         steps: int,
     ) -> ConversationJob | None:
         async with self._lock:
@@ -95,6 +99,7 @@ class ConversationJobStore:
             job.status = "completed"
             job.updated_at = _now_text()
             job.final_response = final_response
+            job.final_response_content = normalize_message_content(final_response_content)
             job.steps = steps
             job.error = ""
             return _copy_job(job)
@@ -104,6 +109,7 @@ class ConversationJobStore:
         job_id: str,
         *,
         final_response: str,
+        final_response_content: MessageContent = "",
         error: str,
         steps: int = 0,
     ) -> ConversationJob | None:
@@ -114,6 +120,7 @@ class ConversationJobStore:
             job.status = "failed"
             job.updated_at = _now_text()
             job.final_response = final_response
+            job.final_response_content = normalize_message_content(final_response_content)
             job.error = error
             job.steps = steps
             return _copy_job(job)
@@ -123,6 +130,7 @@ class ConversationJobStore:
         job_id: str,
         *,
         final_response: str,
+        final_response_content: MessageContent = "",
         steps: int = 0,
     ) -> ConversationJob | None:
         async with self._lock:
@@ -132,6 +140,7 @@ class ConversationJobStore:
             job.status = "cancelled"
             job.updated_at = _now_text()
             job.final_response = final_response
+            job.final_response_content = normalize_message_content(final_response_content)
             job.error = ""
             job.steps = steps
             return _copy_job(job)
@@ -176,6 +185,7 @@ def _copy_job(job: ConversationJob) -> ConversationJob:
         updated_at=job.updated_at,
         trace_run_id=job.trace_run_id,
         final_response=job.final_response,
+        final_response_content=normalize_message_content(job.final_response_content),
         error=job.error,
         steps=job.steps,
     )

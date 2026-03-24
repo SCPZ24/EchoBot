@@ -4,8 +4,10 @@ import json
 from typing import Any
 
 from ..models import (
+    FILE_ATTACHMENT_CONTENT_BLOCK_TYPE,
     LLMMessage,
     ToolCall,
+    file_attachment_summary,
     message_content_to_text,
     normalize_message_content,
 )
@@ -153,6 +155,16 @@ def _collect_message_content(
         block_type = str(block.get("type", "")).strip()
         if block_type in {"text", "image_url"}:
             filtered_blocks.append(dict(block))
+            continue
+        if block_type == FILE_ATTACHMENT_CONTENT_BLOCK_TYPE:
+            summary = file_attachment_summary(block.get("file_attachment"))
+            if summary:
+                filtered_blocks.append(
+                    {
+                        "type": "text",
+                        "text": summary,
+                    }
+                )
 
     if filtered_blocks:
         return filtered_blocks

@@ -4,8 +4,10 @@ import asyncio
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from echobot import AgentCore, AgentRunResult, LLMMessage, LLMResponse, ToolCall
+from echobot.attachments import AttachmentStore
 from echobot.channels import (
     ChannelAddress,
     InboundMessage,
@@ -67,12 +69,23 @@ class FakeCronSetupRunner:
         session_name: str,
         prompt: str,
         *,
+        image_urls=None,
+        file_attachments=None,
         scheduled_context: bool = False,
         transient_system_messages=None,
         temperature=None,
         max_tokens=None,
+        trace_run_id=None,
     ) -> SessionRunResult:
-        del scheduled_context, transient_system_messages, temperature, max_tokens
+        del (
+            image_urls,
+            file_attachments,
+            scheduled_context,
+            transient_system_messages,
+            temperature,
+            max_tokens,
+            trace_run_id,
+        )
         tool_call = ToolCall(
             id="cron_add_1",
             name="cron",
@@ -137,6 +150,8 @@ def build_test_runtime(
     )
     context = RuntimeContext(
         workspace=workspace,
+        attachment_store=AttachmentStore(workspace / "attachments"),
+        supports_image_input=True,
         agent=agent,
         session_store=session_store,
         agent_session_store=agent_session_store,
@@ -163,12 +178,14 @@ def make_inbound(
     channel: str = "telegram",
     chat_id: str = "12345",
     image_urls: list[str] | None = None,
+    files: list[dict[str, str]] | None = None,
 ) -> InboundMessage:
     return InboundMessage(
         address=ChannelAddress(channel=channel, chat_id=chat_id),
         sender_id="u1",
         text=text,
         image_urls=list(image_urls or []),
+        files=list(files or []),
         metadata={"message_id": message_id},
     )
 
@@ -286,7 +303,13 @@ class GatewayRuntimeTests(unittest.IsolatedAsyncioTestCase):
             inbound = make_inbound(
                 "",
                 message_id=17,
-                image_urls=["data:image/png;base64,AAAA"],
+                image_urls=[
+                    {
+                        "attachment_id": "img_demo",
+                        "url": "attachment://img_demo",
+                        "preview_url": "/api/attachments/img_demo/content",
+                    }
+                ],
             )
 
             await gateway.handle_inbound_message(inbound)
@@ -297,8 +320,182 @@ class GatewayRuntimeTests(unittest.IsolatedAsyncioTestCase):
             session = session_store.load_session(current.session_name)
             self.assertIsInstance(session.history[0].content, list)
             self.assertEqual(
-                "data:image/png;base64,AAAA",
+                "attachment://img_demo",
                 session.history[0].content[0]["image_url"]["url"],
+            )
+
+    async def test_handle_inbound_message_ignores_images_when_vision_is_disabled(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            context, session_store = build_test_runtime(workspace)
+            context.supports_image_input = False
+            bus = MessageBus()
+            delivery_store = DeliveryStore(workspace / "delivery.json")
+            route_session_store = RouteSessionStore(workspace / "route_sessions.json")
+            gateway = GatewayRuntime(
+                context,
+                bus,
+                delivery_store=delivery_store,
+                route_session_store=route_session_store,
+            )
+            inbound = make_inbound(
+                "",
+                message_id=19,
+                image_urls=[
+                    {
+                        "attachment_id": "img_demo",
+                        "url": "attachment://img_demo",
+                        "preview_url": "/api/attachments/img_demo/content",
+                    }
+                ],
+            )
+
+            await gateway.handle_inbound_message(inbound)
+            outbound = await bus.consume_outbound()
+
+            self.assertEqual("pong", outbound.text)
+            current = route_session_store.get_current_session(inbound.route_key)
+            session = session_store.load_session(current.session_name)
+            self.assertEqual("", session.history[0].content)
+
+    async def test_handle_inbound_message_supports_file_only_payloads(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            context, session_store = build_test_runtime(workspace)
+            bus = MessageBus()
+            delivery_store = DeliveryStore(workspace / "delivery.json")
+            route_session_store = RouteSessionStore(workspace / "route_sessions.json")
+            gateway = GatewayRuntime(
+                context,
+                bus,
+                delivery_store=delivery_store,
+                route_session_store=route_session_store,
+            )
+            file_attachment = context.attachment_store.create_file_attachment(
+                b"hello from uploaded gateway file\n",
+                content_type="text/plain",
+                filename="notes.txt",
+            )
+            inbound = make_inbound(
+                "",
+                message_id=18,
+                files=[{"attachment_id": file_attachment.attachment_id}],
+            )
+
+            await gateway.handle_inbound_message(inbound)
+            outbound = await bus.consume_outbound()
+
+            self.assertEqual("pong", outbound.text)
+            current = route_session_store.get_current_session(inbound.route_key)
+            session = session_store.load_session(current.session_name)
+            visible_content = session.history[0].content
+
+            self.assertIsInstance(visible_content, list)
+            assert isinstance(visible_content, list)
+            self.assertEqual("file_attachment", visible_content[0]["type"])
+            self.assertEqual(
+                "notes.txt",
+                visible_content[0]["file_attachment"]["name"],
+            )
+            self.assertEqual(
+                file_attachment.attachment_id,
+                visible_content[0]["file_attachment"]["attachment_id"],
+            )
+
+    async def test_file_attachments_do_not_override_chat_only_route_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            context, _session_store = build_test_runtime(workspace)
+            context.tool_registry_factory = (
+                lambda *_args: SimpleNamespace(names=lambda: ["read_text_file"])
+            )
+            bus = MessageBus()
+            delivery_store = DeliveryStore(workspace / "delivery.json")
+            route_session_store = RouteSessionStore(workspace / "route_sessions.json")
+            gateway = GatewayRuntime(
+                context,
+                bus,
+                delivery_store=delivery_store,
+                route_session_store=route_session_store,
+            )
+            file_attachment = context.attachment_store.create_file_attachment(
+                b"hello from uploaded gateway file\n",
+                content_type="text/plain",
+                filename="notes.txt",
+            )
+
+            await gateway.handle_inbound_message(
+                make_inbound("/route chat", message_id=41),
+            )
+            switched = await bus.consume_outbound()
+
+            await gateway.handle_inbound_message(
+                make_inbound(
+                    "Please set a cron reminder",
+                    message_id=42,
+                    files=[{"attachment_id": file_attachment.attachment_id}],
+                )
+            )
+            outbound = await bus.consume_outbound()
+
+            self.assertEqual("Switched route mode to: chat_only", switched.text)
+            self.assertEqual("pong", outbound.text)
+            self.assertNotIn("async_result", outbound.metadata)
+
+            with self.assertRaises(asyncio.TimeoutError):
+                await asyncio.wait_for(bus.consume_outbound(), timeout=0.05)
+
+    async def test_handle_inbound_message_uses_structured_response_content(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            context, _session_store = build_test_runtime(workspace)
+            bus = MessageBus()
+            delivery_store = DeliveryStore(workspace / "delivery.json")
+            route_session_store = RouteSessionStore(workspace / "route_sessions.json")
+            gateway = GatewayRuntime(
+                context,
+                bus,
+                delivery_store=delivery_store,
+                route_session_store=route_session_store,
+            )
+            session = context.session_store.load_or_create_session("structured")
+
+            async def fake_handle_user_turn(*args, **kwargs):
+                del args, kwargs
+                return SimpleNamespace(
+                    session=session,
+                    response_text="report.txt",
+                    response_content=[
+                        {
+                            "type": "file_attachment",
+                            "file_attachment": {
+                                "attachment_id": "file_demo",
+                                "name": "report.txt",
+                                "download_url": "/api/attachments/file_demo/content",
+                                "workspace_path": "report.txt",
+                                "content_type": "text/plain",
+                                "size_bytes": 5,
+                            },
+                        }
+                    ],
+                    delegated=False,
+                    completed=True,
+                )
+
+            context.coordinator.handle_user_turn = fake_handle_user_turn  # type: ignore[method-assign]
+
+            await gateway.handle_inbound_message(make_inbound("send file", message_id=32))
+            outbound = await bus.consume_outbound()
+
+            self.assertIn("report.txt", outbound.text)
+            self.assertIsInstance(outbound.content, list)
+            assert isinstance(outbound.content, list)
+            self.assertEqual("file_attachment", outbound.content[0]["type"])
+            self.assertEqual(
+                "report.txt",
+                outbound.content[0]["file_attachment"]["name"],
             )
 
     async def test_role_commands_return_shared_role_responses(self) -> None:

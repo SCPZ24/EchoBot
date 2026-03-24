@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
+from ...models import FileInput, ImageInput
 from ...orchestration import (
     ConversationCoordinator,
     ConversationJob,
@@ -33,7 +34,8 @@ class ChatService:
         session_name: str,
         prompt: str,
         *,
-        image_urls: list[str] | None = None,
+        image_urls: list[ImageInput] | None = None,
+        file_attachments: list[FileInput] | None = None,
         role_name: str | None = None,
         route_mode: RouteMode | None = None,
     ) -> OrchestratedTurnResult:
@@ -41,6 +43,7 @@ class ChatService:
             session_name,
             prompt,
             image_urls=image_urls,
+            file_attachments=file_attachments,
             role_name=role_name,
             route_mode=route_mode,
         )
@@ -52,7 +55,8 @@ class ChatService:
         session_name: str,
         prompt: str,
         *,
-        image_urls: list[str] | None = None,
+        image_urls: list[ImageInput] | None = None,
+        file_attachments: list[FileInput] | None = None,
         role_name: str | None = None,
         route_mode: RouteMode | None = None,
         on_chunk: StreamCallback | None = None,
@@ -61,6 +65,7 @@ class ChatService:
             session_name,
             prompt,
             image_urls=image_urls,
+            file_attachments=file_attachments,
             role_name=role_name,
             route_mode=route_mode,
             on_chunk=on_chunk,

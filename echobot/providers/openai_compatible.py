@@ -10,12 +10,15 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib import error, request
 
+from ..attachments import ATTACHMENT_URL_PREFIX, AttachmentStore
 from ..models import (
+    FILE_ATTACHMENT_CONTENT_BLOCK_TYPE,
     LLMMessage,
     LLMResponse,
     LLMTool,
     LLMUsage,
     ToolCall,
+    file_attachment_summary,
     message_content_to_text,
     normalize_message_content,
 )
@@ -79,8 +82,14 @@ class OpenAICompatibleSettings:
 
 
 class OpenAICompatibleProvider(LLMProvider):
-    def __init__(self, settings: OpenAICompatibleSettings) -> None:
+    def __init__(
+        self,
+        settings: OpenAICompatibleSettings,
+        *,
+        attachment_store: AttachmentStore | None = None,
+    ) -> None:
         self.settings = settings
+        self._attachment_store = attachment_store
 
     async def generate(
         self,
@@ -91,7 +100,8 @@ class OpenAICompatibleProvider(LLMProvider):
         temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> LLMResponse:
-        payload = self._build_payload(
+        payload = await asyncio.to_thread(
+            self._build_payload,
             messages=messages,
             tools=tools,
             tool_choice=tool_choice,
@@ -124,7 +134,8 @@ class OpenAICompatibleProvider(LLMProvider):
                 yield content
             return
 
-        payload = self._build_payload(
+        payload = await asyncio.to_thread(
+            self._build_payload,
             messages=messages,
             tools=None,
             tool_choice=tool_choice,
@@ -172,7 +183,10 @@ class OpenAICompatibleProvider(LLMProvider):
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self.settings.model,
-            "messages": [message.to_dict() for message in _merge_system_messages(messages)],
+            "messages": [
+                self._message_payload(message)
+                for message in _merge_system_messages(messages)
+            ],
         }
 
         if tools:
@@ -188,6 +202,77 @@ class OpenAICompatibleProvider(LLMProvider):
             payload.update(self.settings.extra_body)
 
         return payload
+
+    def _message_payload(self, message: LLMMessage) -> dict[str, Any]:
+        payload = message.to_dict()
+        content = payload.get("content")
+        if not isinstance(content, list):
+            return payload
+
+        resolved_content: list[dict[str, Any]] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+
+            block_type = str(block.get("type", "")).strip()
+            if block_type == FILE_ATTACHMENT_CONTENT_BLOCK_TYPE:
+                file_attachment = block.get("file_attachment")
+                if not isinstance(file_attachment, dict):
+                    continue
+                attachment_text = self._file_attachment_text(file_attachment)
+                if attachment_text:
+                    resolved_content.append(
+                        {
+                            "type": "text",
+                            "text": attachment_text,
+                        }
+                    )
+                continue
+
+            if block_type != "image_url":
+                resolved_content.append(dict(block))
+                continue
+
+            image_url = block.get("image_url")
+            if not isinstance(image_url, dict):
+                resolved_content.append(dict(block))
+                continue
+
+            resolved_content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": self._resolve_image_url(image_url),
+                    },
+                }
+            )
+
+        payload["content"] = resolved_content
+        return payload
+
+    def _resolve_image_url(self, image_url: dict[str, Any]) -> str:
+        attachment_id = str(image_url.get("attachment_id", "")).strip()
+        raw_url = str(image_url.get("url", "")).strip()
+
+        if not attachment_id and raw_url.startswith(ATTACHMENT_URL_PREFIX):
+            attachment_id = raw_url.removeprefix(ATTACHMENT_URL_PREFIX)
+
+        if attachment_id:
+            if self._attachment_store is None:
+                raise RuntimeError("Image attachments require an attachment store")
+            return self._attachment_store.image_attachment_data_url(attachment_id)
+
+        return raw_url
+
+    def _file_attachment_text(self, file_attachment: dict[str, Any]) -> str:
+        summary = file_attachment_summary(file_attachment)
+        if not summary:
+            return ""
+        return (
+            "The user attached a local file for this request.\n"
+            f"{summary}\n"
+            "Use the available file or workspace tools if you need to inspect it."
+        )
 
     def _post_json(self, payload: dict[str, Any]) -> dict[str, Any]:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")

@@ -12,6 +12,7 @@ BOOTSTRAP_FILES = ("AGENTS.md",)
 def build_default_system_prompt(
     workspace: str | Path = ".",
     *,
+    supports_image_input: bool = True,
     enable_project_memory: bool = False,
     memory_workspace: str | Path | None = None,
     enable_scheduling: bool = False,
@@ -40,6 +41,7 @@ def build_default_system_prompt(
                 heartbeat_interval_seconds=heartbeat_interval_seconds,
             )
         )
+    parts.append(_build_delivery_section(supports_image_input=supports_image_input))
 
     bootstrap_text = _load_bootstrap_files(workspace_path)
     if bootstrap_text:
@@ -146,6 +148,22 @@ def _build_scheduling_section(
         "- If the current turn is itself running from cron or heartbeat, complete the requested work and report the result. Do not mutate cron jobs unless explicitly asked and allowed.",
         "- Do not create or edit cron jobs from inside a scheduled task unless the user explicitly asks for that behavior.",
     ]
+    return "\n".join(lines)
+
+
+def _build_delivery_section(*, supports_image_input: bool) -> str:
+    lines = [
+        "## Delivery",
+        "- When the user asks you to send or attach a local image in the chat, use `send_image_to_user`.",
+        "- When the user asks you to send or attach a local file in the chat, use `send_file_to_user`.",
+        "- Never claim that an image, file, or attachment was sent unless the corresponding send tool succeeded in this turn.",
+        "- If the send tool fails, say that clearly instead of pretending the file or image was delivered.",
+    ]
+    if supports_image_input:
+        lines.insert(
+            3,
+            "- Use `view_image` only to inspect an image yourself. It does not send anything to the user.",
+        )
     return "\n".join(lines)
 
 

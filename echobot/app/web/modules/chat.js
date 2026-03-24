@@ -1,7 +1,12 @@
-import { buildUserMessageContent } from "./content.js";
+import {
+    buildUserMessageContent,
+    hasMessageContent,
+    messageContentToText,
+} from "./content.js";
 import { DEFAULT_SESSION_NAME, DOM, UI_STATE } from "./state.js";
 
-const MAX_COMPOSER_IMAGES = 6;
+const MAX_COMPOSER_IMAGES = 20;
+const MAX_COMPOSER_FILES = 20;
 
 export function createChatModule(deps) {
     const {
@@ -10,6 +15,7 @@ export function createChatModule(deps) {
         cancelChatJob,
         createSpeechSession,
         drainVoicePromptQueue,
+        deleteAttachment,
         ensureAudioContextReady,
         finalizeSpeechSession,
         normalizeSessionName,
@@ -27,6 +33,8 @@ export function createChatModule(deps) {
         startTracePanel,
         stopSpeechPlayback,
         syncCurrentSessionFromServer,
+        uploadChatFile,
+        uploadChatImage,
         applyTracePayload,
         updateMessage,
     } = deps;
@@ -39,7 +47,8 @@ export function createChatModule(deps) {
 
         const prompt = String(DOM.promptInput?.value || "").trim();
         const composerImages = [...(UI_STATE.composerImages || [])];
-        if (!prompt && composerImages.length === 0) {
+        const composerFiles = [...(UI_STATE.composerFiles || [])];
+        if (!prompt && composerImages.length === 0 && composerFiles.length === 0) {
             return;
         }
 
@@ -52,8 +61,6 @@ export function createChatModule(deps) {
         DOM.sessionLabel.textContent = `会话: ${sessionName}`;
         window.localStorage.setItem("echobot.web.session", sessionName);
 
-        DOM.promptInput.value = "";
-        clearComposerImages();
         stopSpeechPlayback();
         setActiveBackgroundJob("");
         resetTracePanel();
@@ -65,7 +72,19 @@ export function createChatModule(deps) {
             "user",
             buildUserMessageContent(
                 prompt,
-                composerImages.map((image) => image.dataUrl),
+                composerImages.map((image) => ({
+                    attachment_id: image.attachmentId,
+                    url: image.url,
+                    preview_url: image.previewUrl,
+                })),
+                composerFiles.map((file) => ({
+                    attachment_id: file.attachmentId,
+                    download_url: file.downloadUrl,
+                    name: file.name,
+                    content_type: file.contentType,
+                    size_bytes: file.sizeBytes,
+                    workspace_path: file.workspacePath,
+                })),
             ),
             "你",
             { renderMode: "plain" },
@@ -86,7 +105,10 @@ export function createChatModule(deps) {
                     role_name: UI_STATE.currentRoleName || "default",
                     route_mode: UI_STATE.currentRouteMode || "auto",
                     images: composerImages.map((image) => ({
-                        data_url: image.dataUrl,
+                        attachment_id: image.attachmentId,
+                    })),
+                    files: composerFiles.map((file) => ({
+                        attachment_id: file.attachmentId,
                     })),
                 },
                 {
@@ -102,6 +124,8 @@ export function createChatModule(deps) {
                     },
                 },
             );
+            DOM.promptInput.value = "";
+            clearComposerAttachments();
 
             if (response.session_name) {
                 UI_STATE.currentSessionName = normalizeSessionName(response.session_name);
@@ -110,12 +134,17 @@ export function createChatModule(deps) {
             }
             UI_STATE.currentRoleName = response.role_name || UI_STATE.currentRoleName;
 
-            const immediateText = String(response.response || streamedText || "").trim();
+            const immediateContent = response.response_content ?? response.response ?? streamedText ?? "";
+            const immediateText = messageContentToText(
+                immediateContent,
+                { includeImageMarker: false },
+            ).trim();
             const hideImmediateReply = Boolean(
                 response.job_id
                 && response.status === "running"
-                && !immediateText,
+                && !hasMessageContent(immediateContent),
             );
+            let finalContent = immediateContent;
             let finalText = immediateText || "处理中...";
             let speakFinalText = true;
             const startupSpeech = hideImmediateReply
@@ -128,7 +157,7 @@ export function createChatModule(deps) {
             } else {
                 updateMessage(
                     assistantMessageId,
-                    finalText,
+                    finalContent,
                     response.completed ? "Echo" : "处理中",
                 );
             }
@@ -139,11 +168,15 @@ export function createChatModule(deps) {
                 startTracePanel(response.job_id);
 
                 const finalJob = await pollChatJob(response.job_id);
-                finalText = finalJob.response || finalText || "任务已结束，但没有返回内容。";
+                finalContent = finalJob.response_content ?? finalJob.response ?? finalContent;
+                finalText = messageContentToText(
+                    finalContent,
+                    { includeImageMarker: false },
+                ).trim() || "任务已结束，但没有返回内容。";
                 if (assistantMessageId) {
-                    updateMessage(assistantMessageId, finalText, "Echo");
+                    updateMessage(assistantMessageId, finalContent, "Echo");
                 } else {
-                    assistantMessageId = addMessage("assistant", finalText, "Echo");
+                    assistantMessageId = addMessage("assistant", finalContent, "Echo");
                 }
 
                 await startupSpeech;
@@ -261,6 +294,83 @@ export function createChatModule(deps) {
         }
     }
 
+    function handleComposerFileButtonClick() {
+        if (
+            !DOM.composerFileInput
+            || UI_STATE.chatBusy
+            || UI_STATE.activeChatJobId
+        ) {
+            return;
+        }
+        DOM.composerFileInput.click();
+    }
+
+    async function handleComposerFileInputChange() {
+        if (!DOM.composerFileInput) {
+            return;
+        }
+
+        const selectedFiles = Array.from(DOM.composerFileInput.files || []);
+        DOM.composerFileInput.value = "";
+        if (!selectedFiles.length) {
+            return;
+        }
+
+        const existingFiles = UI_STATE.composerFiles || [];
+        const availableSlots = Math.max(
+            MAX_COMPOSER_FILES - existingFiles.length,
+            0,
+        );
+        if (availableSlots <= 0) {
+            setRunStatus(`最多只能附加 ${MAX_COMPOSER_FILES} 个文件`);
+            return;
+        }
+
+        const filesToUpload = selectedFiles.slice(0, availableSlots);
+        if (filesToUpload.length < selectedFiles.length) {
+            setRunStatus(`最多只能附加 ${MAX_COMPOSER_FILES} 个文件`);
+        }
+
+        try {
+            const nextFiles = await readComposerFiles(
+                filesToUpload,
+                uploadChatFile,
+                deleteAttachment,
+            );
+            appendComposerFiles(nextFiles, setRunStatus);
+        } catch (error) {
+            console.error("Failed to load composer files", error);
+            setRunStatus(error.message || "文件上传失败");
+        }
+    }
+
+    async function handleComposerFilesClick(event) {
+        const removeButton = event.target.closest("[data-composer-file-id]");
+        if (!removeButton) {
+            return;
+        }
+
+        const fileId = String(removeButton.dataset.composerFileId || "").trim();
+        if (!fileId) {
+            return;
+        }
+
+        const existingFiles = UI_STATE.composerFiles || [];
+        const removedFile = existingFiles.find((file) => file.id === fileId) || null;
+        UI_STATE.composerFiles = existingFiles.filter(
+            (file) => file.id !== fileId,
+        );
+        renderComposerFiles();
+        if (removedFile && removedFile.attachmentId) {
+            try {
+                await deleteAttachment(removedFile.attachmentId);
+            } catch (error) {
+                console.error("Failed to delete removed composer file", error);
+                setRunStatus(error.message || "文件清理失败");
+            }
+        }
+    }
+
     function handleComposerImageButtonClick() {
         if (
             !DOM.composerImageInput
@@ -284,11 +394,6 @@ export function createChatModule(deps) {
         }
 
         try {
-            const nextImages = await readComposerImages(selectedFiles);
-            if (!nextImages.length) {
-                return;
-            }
-
             const existingImages = UI_STATE.composerImages || [];
             const availableSlots = Math.max(
                 MAX_COMPOSER_IMAGES - existingImages.length,
@@ -299,11 +404,21 @@ export function createChatModule(deps) {
                 return;
             }
 
-            const acceptedImages = nextImages.slice(0, availableSlots);
-            if (acceptedImages.length < nextImages.length) {
+            const imagesToUpload = selectedFiles.slice(0, availableSlots);
+            if (imagesToUpload.length < selectedFiles.length) {
                 setRunStatus(`最多只能附加 ${MAX_COMPOSER_IMAGES} 张图片`);
             }
-            UI_STATE.composerImages = [...existingImages, ...acceptedImages];
+
+            const nextImages = await readComposerImages(
+                imagesToUpload,
+                uploadChatImage,
+                deleteAttachment,
+            );
+            if (!nextImages.length) {
+                return;
+            }
+
+            UI_STATE.composerImages = [...existingImages, ...nextImages];
             renderComposerImages();
         } catch (error) {
             console.error("Failed to load composer images", error);
@@ -311,7 +426,7 @@ export function createChatModule(deps) {
         }
     }
 
-    function handleComposerImagesClick(event) {
+    async function handleComposerImagesClick(event) {
         const removeButton = event.target.closest("[data-composer-image-id]");
         if (!removeButton) {
             return;
@@ -322,54 +437,210 @@ export function createChatModule(deps) {
             return;
         }
 
-        UI_STATE.composerImages = (UI_STATE.composerImages || []).filter(
+        const existingImages = UI_STATE.composerImages || [];
+        const removedImage = existingImages.find((image) => image.id === imageId) || null;
+        UI_STATE.composerImages = existingImages.filter(
             (image) => image.id !== imageId,
         );
         renderComposerImages();
+        if (removedImage && removedImage.attachmentId) {
+            try {
+                await deleteAttachment(removedImage.attachmentId);
+            } catch (error) {
+                console.error("Failed to delete removed composer image", error);
+                setRunStatus(error.message || "图片清理失败");
+            }
+        }
     }
 
-    function refreshComposerImages() {
+    function refreshComposerAttachments() {
+        renderComposerFiles();
         renderComposerImages();
     }
 
     return {
         handleChatSubmit: handleChatSubmit,
         handleStopBackgroundJob: handleStopBackgroundJob,
+        handleComposerFileButtonClick: handleComposerFileButtonClick,
+        handleComposerFileInputChange: handleComposerFileInputChange,
+        handleComposerFilesClick: handleComposerFilesClick,
         handleComposerImageButtonClick: handleComposerImageButtonClick,
         handleComposerImageInputChange: handleComposerImageInputChange,
         handleComposerImagesClick: handleComposerImagesClick,
-        refreshComposerImages: refreshComposerImages,
+        refreshComposerAttachments: refreshComposerAttachments,
     };
 }
 
-function clearComposerImages() {
+function clearComposerAttachments() {
     UI_STATE.composerImages = [];
+    UI_STATE.composerFiles = [];
+    renderComposerFiles();
     renderComposerImages();
 }
 
-async function readComposerImages(files) {
+async function readComposerImages(files, uploadImage, deleteAttachment) {
     const imageFiles = files.filter((file) => String(file.type || "").startsWith("image/"));
-    const nextImages = await Promise.all(
-        imageFiles.map(async (file, index) => ({
-            id: `img-${Date.now()}-${index}-${Math.random().toString(16).slice(2, 8)}`,
-            name: file.name || "image",
-            dataUrl: await readFileAsDataUrl(file),
-        })),
+    const nextImages = [];
+    try {
+        for (let index = 0; index < imageFiles.length; index += 1) {
+            const file = imageFiles[index];
+            const uploaded = await uploadImage(file);
+            nextImages.push({
+                id: `img-${Date.now()}-${index}-${Math.random().toString(16).slice(2, 8)}`,
+                name: uploaded.original_filename || file.name || "image",
+                attachmentId: String(uploaded.attachment_id || "").trim(),
+                url: String(uploaded.url || "").trim(),
+                previewUrl: String(uploaded.preview_url || "").trim(),
+            });
+        }
+    } catch (error) {
+        await cleanupUploadedComposerEntries(nextImages, deleteAttachment);
+        throw error;
+    }
+    return nextImages.filter(
+        (image) => String(image.attachmentId || "").trim() && String(image.url || "").trim(),
     );
-    return nextImages.filter((image) => String(image.dataUrl || "").trim());
 }
 
-function readFileAsDataUrl(file) {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.addEventListener("load", () => {
-            resolve(String(reader.result || ""));
-        });
-        reader.addEventListener("error", () => {
-            reject(reader.error || new Error("Failed to read image file."));
-        });
-        reader.readAsDataURL(file);
+function appendComposerFiles(nextFiles, setRunStatus) {
+    if (!nextFiles.length) {
+        return;
+    }
+
+    const existingFiles = UI_STATE.composerFiles || [];
+    const availableSlots = Math.max(
+        MAX_COMPOSER_FILES - existingFiles.length,
+        0,
+    );
+    if (availableSlots <= 0) {
+        setRunStatus(`最多只能附加 ${MAX_COMPOSER_FILES} 个文件`);
+        return;
+    }
+
+    const acceptedFiles = nextFiles.slice(0, availableSlots);
+    if (acceptedFiles.length < nextFiles.length) {
+        setRunStatus(`最多只能附加 ${MAX_COMPOSER_FILES} 个文件`);
+    }
+    UI_STATE.composerFiles = [...existingFiles, ...acceptedFiles];
+    renderComposerFiles();
+}
+
+async function readComposerFiles(files, uploadFile, deleteAttachment) {
+    const nextFiles = [];
+    try {
+        for (let index = 0; index < files.length; index += 1) {
+            const file = files[index];
+            const uploaded = await uploadFile(file);
+            nextFiles.push({
+                id: `file-${Date.now()}-${index}-${Math.random().toString(16).slice(2, 8)}`,
+                name: uploaded.original_filename || file.name || "file",
+                attachmentId: String(uploaded.attachment_id || "").trim(),
+                downloadUrl: String(uploaded.download_url || "").trim(),
+                contentType: String(uploaded.content_type || "").trim(),
+                sizeBytes: Number(uploaded.size_bytes || file.size || 0),
+                workspacePath: String(uploaded.workspace_path || "").trim(),
+            });
+        }
+    } catch (error) {
+        await cleanupUploadedComposerEntries(nextFiles, deleteAttachment);
+        throw error;
+    }
+    return nextFiles.filter(
+        (file) => String(file.attachmentId || "").trim() && String(file.workspacePath || "").trim(),
+    );
+}
+
+async function cleanupUploadedComposerEntries(entries, deleteAttachment) {
+    if (!Array.isArray(entries) || entries.length === 0) {
+        return;
+    }
+
+    await Promise.allSettled(
+        entries
+            .map((entry) => String(entry?.attachmentId || "").trim())
+            .filter(Boolean)
+            .map((attachmentId) => deleteAttachment(attachmentId)),
+    );
+}
+
+function renderComposerFiles() {
+    if (!DOM.composerFiles) {
+        return;
+    }
+
+    const composerFiles = Array.isArray(UI_STATE.composerFiles)
+        ? UI_STATE.composerFiles
+        : [];
+    DOM.composerFiles.innerHTML = "";
+    DOM.composerFiles.hidden = composerFiles.length === 0;
+
+    composerFiles.forEach((file) => {
+        const card = document.createElement("div");
+        card.className = "composer-file-chip";
+
+        const body = document.createElement("div");
+        body.className = "composer-file-body";
+
+        const name = document.createElement("div");
+        name.className = "composer-file-name";
+        name.textContent = file.name || "file";
+        body.appendChild(name);
+
+        const meta = document.createElement("div");
+        meta.className = "composer-file-meta";
+        meta.textContent = describeComposerFile(file);
+        if (meta.textContent) {
+            body.appendChild(meta);
+        }
+
+        card.appendChild(body);
+
+        const removeButton = document.createElement("button");
+        removeButton.type = "button";
+        removeButton.className = "composer-file-remove";
+        removeButton.dataset.composerFileId = file.id;
+        removeButton.textContent = "移除";
+        removeButton.title = "移除文件";
+        removeButton.disabled = UI_STATE.chatBusy || Boolean(UI_STATE.activeChatJobId);
+        card.appendChild(removeButton);
+
+        DOM.composerFiles.appendChild(card);
     });
+}
+
+function buildComposerFileMetaText(file) {
+    const parts = [];
+    const contentType = String(file.contentType || "").trim();
+    const workspacePath = String(file.workspacePath || "").trim();
+    if (contentType) {
+        parts.push(contentType);
+    }
+    if (workspacePath) {
+        parts.push(workspacePath);
+    }
+    return parts.join(" · ");
+}
+
+function describeComposerFile(file) {
+    const sizeText = formatComposerFileSize(file.sizeBytes);
+    if (sizeText) {
+        return `\u5f85\u53d1\u9001 · ${sizeText}`;
+    }
+    return "\u5f85\u53d1\u9001";
+}
+
+function formatComposerFileSize(sizeBytes) {
+    const size = Number(sizeBytes || 0);
+    if (!Number.isFinite(size) || size <= 0) {
+        return "";
+    }
+    if (size < 1024) {
+        return `${size} B`;
+    }
+    if (size < 1024 * 1024) {
+        return `${(size / 1024).toFixed(1).replace(/\\.0$/, "")} KB`;
+    }
+    return `${(size / (1024 * 1024)).toFixed(1).replace(/\\.0$/, "")} MB`;
 }
 
 function renderComposerImages() {
@@ -389,7 +660,7 @@ function renderComposerImages() {
 
         const preview = document.createElement("img");
         preview.className = "composer-image-thumb";
-        preview.src = image.dataUrl;
+        preview.src = image.previewUrl || image.url;
         preview.alt = image.name || "Selected image";
         preview.loading = "lazy";
         card.appendChild(preview);

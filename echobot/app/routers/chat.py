@@ -7,7 +7,12 @@ from contextlib import suppress
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
-from ...images import normalize_image_data_urls_to_jpeg
+from ...turn_inputs import (
+    has_file_processing_capability,
+    resolve_attachment_files,
+    resolve_attachment_images,
+    resolve_file_attachment_route_mode,
+)
 from ..schemas import ChatJobResponse, ChatJobTraceResponse, ChatRequest, ChatResponse
 from ..state import get_app_runtime
 
@@ -21,13 +26,27 @@ async def run_chat(
     runtime=Depends(get_app_runtime),
 ) -> ChatResponse:
     try:
-        image_urls = await _normalize_chat_images(request)
+        image_urls = await _resolve_chat_images(
+            request,
+            runtime.context.attachment_store,
+            supports_image_input=runtime.context.supports_image_input,
+        )
+        file_attachments = await _resolve_chat_files(
+            request,
+            runtime.context.attachment_store,
+            runtime.context.workspace,
+        )
         result = await runtime.chat_service.run_prompt(
             request.session_name,
             request.prompt,
             image_urls=image_urls,
+            file_attachments=file_attachments,
             role_name=request.role_name,
-            route_mode=request.route_mode,
+            route_mode=await _resolve_effective_route_mode(
+                request,
+                runtime,
+                has_file_attachments=bool(file_attachments),
+            ),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -37,6 +56,7 @@ async def run_chat(
     return ChatResponse(
         session_name=result.session.name,
         response=result.response_text,
+        response_content=result.response_content,
         updated_at=result.session.updated_at,
         steps=result.steps,
         compressed_summary=result.compressed_summary,
@@ -67,13 +87,27 @@ async def run_chat_stream(
 
     async def produce() -> None:
         try:
-            image_urls = await _normalize_chat_images(request)
+            image_urls = await _resolve_chat_images(
+                request,
+                runtime.context.attachment_store,
+                supports_image_input=runtime.context.supports_image_input,
+            )
+            file_attachments = await _resolve_chat_files(
+                request,
+                runtime.context.attachment_store,
+                runtime.context.workspace,
+            )
             result = await runtime.chat_service.run_prompt_stream(
                 request.session_name,
                 request.prompt,
                 image_urls=image_urls,
+                file_attachments=file_attachments,
                 role_name=request.role_name,
-                route_mode=request.route_mode,
+                route_mode=await _resolve_effective_route_mode(
+                    request,
+                    runtime,
+                    has_file_attachments=bool(file_attachments),
+                ),
                 on_chunk=on_chunk,
             )
         except ValueError as exc:
@@ -101,6 +135,7 @@ async def run_chat_stream(
                         "type": "done",
                         "session_name": result.session.name,
                         "response": result.response_text,
+                        "response_content": result.response_content,
                         "updated_at": result.session.updated_at,
                         "steps": result.steps,
                         "compressed_summary": result.compressed_summary,
@@ -152,6 +187,7 @@ async def get_chat_job(
         session_name=job.session_name,
         status=job.status,
         response=response_text,
+        response_content=job.final_response_content or response_text,
         error=job.error,
         steps=job.steps,
         created_at=job.created_at,
@@ -192,6 +228,7 @@ async def cancel_chat_job(
         session_name=job.session_name,
         status=job.status,
         response=response_text,
+        response_content=job.final_response_content or response_text,
         error=job.error,
         steps=job.steps,
         created_at=job.created_at,
@@ -203,8 +240,58 @@ def _stream_payload_bytes(payload: dict[str, object]) -> bytes:
     return (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
 
 
-async def _normalize_chat_images(request: ChatRequest) -> list[str]:
-    image_urls = [image.data_url for image in request.images]
-    if not image_urls:
+async def _resolve_chat_images(
+    request: ChatRequest,
+    attachment_store,
+    *,
+    supports_image_input: bool,
+) -> list[dict[str, str]]:
+    if not supports_image_input or not request.images:
         return []
-    return await asyncio.to_thread(normalize_image_data_urls_to_jpeg, image_urls)
+    return await asyncio.to_thread(
+        resolve_attachment_images,
+        attachment_store,
+        request.images,
+    )
+
+
+async def _resolve_chat_files(
+    request: ChatRequest,
+    attachment_store,
+    workspace,
+) -> list[dict[str, object]]:
+    if not request.files:
+        return []
+    return await asyncio.to_thread(
+        resolve_attachment_files,
+        attachment_store,
+        workspace,
+        request.files,
+    )
+
+
+async def _resolve_effective_route_mode(
+    request: ChatRequest,
+    runtime,
+    *,
+    has_file_attachments: bool,
+):
+    can_process_files = False
+    current_route_mode = None
+    if has_file_attachments:
+        can_process_files = has_file_processing_capability(
+            runtime.context.skill_registry,
+            getattr(runtime.context, "tool_registry_factory", None),
+            request.session_name,
+        )
+    if request.route_mode is None and can_process_files:
+        current_route_mode = await runtime.chat_service.current_route_mode(
+            request.session_name,
+        )
+
+    return resolve_file_attachment_route_mode(
+        requested_route_mode=request.route_mode,
+        current_route_mode=current_route_mode,
+        has_file_attachments=has_file_attachments,
+        can_process_files=can_process_files,
+    )

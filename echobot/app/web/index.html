@@ -664,7 +664,14 @@
                         rows="4"
                         placeholder="例如：今天帮我安排一下工作重点。"
                     ></textarea>
+                    <div id="composer-files" class="composer-files" hidden></div>
                     <div id="composer-images" class="composer-images" hidden></div>
+                    <input
+                        id="composer-file-input"
+                        type="file"
+                        multiple
+                        hidden
+                    >
                     <input
                         id="composer-image-input"
                         type="file"
@@ -684,6 +691,20 @@
                     <div class="composer-actions">
                         <span class="muted-text">Shift + Enter 换行</span>
                         <div class="composer-action-buttons">
+                            <button
+                                id="composer-file-button"
+                                class="ghost-button icon-button"
+                                type="button"
+                                title="添加文件"
+                                aria-label="添加文件"
+                            >
+                                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                    <path
+                                        d="M7.5 3.5A2.5 2.5 0 0 0 5 6v12A2.5 2.5 0 0 0 7.5 20.5h9A2.5 2.5 0 0 0 19 18V9.56a2.5 2.5 0 0 0-.73-1.77l-3.06-3.06A2.5 2.5 0 0 0 13.44 4H7.5Zm0 1.5h5.44c.27 0 .52.1.71.29l3.06 3.06c.19.19.29.44.29.71V18c0 .55-.45 1-1 1h-9c-.55 0-1-.45-1-1V6c0-.55.45-1 1-1Zm3 5.25a.75.75 0 0 0 0 1.5h3a.75.75 0 0 0 0-1.5h-3Zm0 3.5a.75.75 0 0 0 0 1.5h5a.75.75 0 0 0 0-1.5h-5Z"
+                                        fill="currentColor"
+                                    />
+                                </svg>
+                            </button>
                             <button
                                 id="composer-image-button"
                                 class="ghost-button icon-button"

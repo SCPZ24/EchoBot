@@ -1,13 +1,22 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from ..models import LLMMessage, build_user_message_content, message_content_to_text
+from ..models import (
+    FileInput,
+    ImageInput,
+    LLMMessage,
+    MessageContent,
+    TEXT_CONTENT_BLOCK_TYPE,
+    build_user_message_content,
+    is_message_content_empty,
+    message_content_blocks,
+    message_content_to_text,
+)
 from ..runtime.session_runner import SessionAgentRunner
 from ..runtime.sessions import ChatSession, SessionStore
 from .decision import DecisionEngine
@@ -70,7 +79,8 @@ class ConversationCoordinator:
         session_name: str,
         prompt: str,
         *,
-        image_urls: list[str] | None = None,
+        image_urls: list[ImageInput] | None = None,
+        file_attachments: list[FileInput] | None = None,
         role_name: str | None = None,
         route_mode: RouteMode | None = None,
         completion_callback: CompletionCallback | None = None,
@@ -79,6 +89,7 @@ class ConversationCoordinator:
             session_name,
             prompt,
             image_urls=image_urls,
+            file_attachments=file_attachments,
             role_name=role_name,
             route_mode=route_mode,
             completion_callback=completion_callback,
@@ -89,7 +100,8 @@ class ConversationCoordinator:
         session_name: str,
         prompt: str,
         *,
-        image_urls: list[str] | None = None,
+        image_urls: list[ImageInput] | None = None,
+        file_attachments: list[FileInput] | None = None,
         role_name: str | None = None,
         route_mode: RouteMode | None = None,
         completion_callback: CompletionCallback | None = None,
@@ -117,6 +129,7 @@ class ConversationCoordinator:
                     session=session,
                     user_input=prompt,
                     image_urls=image_urls,
+                    file_attachments=file_attachments,
                     role_card=role_card,
                     on_chunk=chunk_handler,
                 )
@@ -124,7 +137,11 @@ class ConversationCoordinator:
                     [
                         LLMMessage(
                             role="user",
-                            content=build_user_message_content(prompt, image_urls),
+                            content=build_user_message_content(
+                                prompt,
+                                image_urls,
+                                file_attachments,
+                            ),
                         ),
                         LLMMessage(role="assistant", content=response_text),
                     ]
@@ -135,6 +152,7 @@ class ConversationCoordinator:
                     response_text=response_text,
                     delegated=False,
                     completed=True,
+                    response_content=response_text,
                     role_name=role_card.name,
                     steps=1,
                     compressed_summary=session.compressed_summary,
@@ -146,6 +164,7 @@ class ConversationCoordinator:
                     session=session,
                     user_input=prompt,
                     image_urls=image_urls,
+                    file_attachments=file_attachments,
                     role_card=role_card,
                 )
             handoff_text = _build_agent_handoff_text(
@@ -154,7 +173,11 @@ class ConversationCoordinator:
             session.history.append(
                 LLMMessage(
                     role="user",
-                    content=build_user_message_content(prompt, image_urls),
+                    content=build_user_message_content(
+                        prompt,
+                        image_urls,
+                        file_attachments,
+                    ),
                 )
             )
             if immediate_response.strip():
@@ -182,6 +205,7 @@ class ConversationCoordinator:
                     session_name=session.name,
                     prompt=prompt,
                     image_urls=image_urls,
+                    file_attachments=file_attachments,
                     handoff_text=handoff_text,
                     trace_run_id=trace_run_id,
                     completion_callback=completion_callback,
@@ -194,6 +218,7 @@ class ConversationCoordinator:
                 response_text=immediate_response,
                 delegated=True,
                 completed=False,
+                response_content=immediate_response,
                 job_id=job.job_id,
                 status=job.status,
                 role_name=role_card.name,
@@ -307,6 +332,7 @@ class ConversationCoordinator:
         return await self._jobs.set_cancelled(
             job_id,
             final_response=final_text,
+            final_response_content=final_text,
         )
 
     async def cancel_jobs_for_session(self, session_name: str) -> list[ConversationJob]:
@@ -337,6 +363,7 @@ class ConversationCoordinator:
             updated_job = await self._jobs.set_cancelled(
                 job.job_id,
                 final_response="",
+                final_response_content="",
             )
             if updated_job is not None:
                 cancelled_jobs.append(updated_job)
@@ -377,7 +404,8 @@ class ConversationCoordinator:
         *,
         session_name: str,
         prompt: str,
-        image_urls: list[str] | None,
+        image_urls: list[ImageInput] | None,
+        file_attachments: list[FileInput] | None,
         handoff_text: str | None,
         trace_run_id: str | None,
         completion_callback: CompletionCallback | None,
@@ -391,17 +419,10 @@ class ConversationCoordinator:
                     if handoff_text and handoff_text.strip()
                     else None
                 ),
+                "image_urls": image_urls,
+                "file_attachments": file_attachments,
+                "trace_run_id": trace_run_id,
             }
-            if image_urls and _supports_keyword_argument(
-                self._agent_runner.run_prompt,
-                "image_urls",
-            ):
-                run_prompt_kwargs["image_urls"] = image_urls
-            if trace_run_id and _supports_keyword_argument(
-                self._agent_runner.run_prompt,
-                "trace_run_id",
-            ):
-                run_prompt_kwargs["trace_run_id"] = trace_run_id
 
             execution = await self._agent_runner.run_prompt(
                 session_name,
@@ -411,36 +432,44 @@ class ConversationCoordinator:
             raw_content = message_content_to_text(
                 execution.agent_result.response.message.content
             ).strip()
+            outbound_content_blocks = list(
+                execution.agent_result.outbound_content_blocks or []
+            )
             scheduled_job = _extract_scheduled_cron_job(
                 execution.agent_result.new_messages,
             )
-            final_text, visible_role_name = await self._finalize_visible_result(
+            final_text, final_content, visible_role_name = await self._finalize_visible_result(
                 session_name,
                 prompt=prompt,
                 image_urls=image_urls,
+                file_attachments=file_attachments,
                 raw_content=raw_content,
                 is_error=False,
                 scheduled_job=scheduled_job,
+                outbound_content_blocks=outbound_content_blocks,
             )
             job = await self._jobs.set_completed(
                 job_id,
                 final_response=final_text,
+                final_response_content=final_content,
                 steps=execution.agent_result.steps,
             )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             error_text = str(exc)
-            final_text, visible_role_name = await self._finalize_visible_result(
+            final_text, final_content, visible_role_name = await self._finalize_visible_result(
                 session_name,
                 prompt=prompt,
                 image_urls=image_urls,
+                file_attachments=file_attachments,
                 raw_content=error_text,
                 is_error=True,
             )
             job = await self._jobs.set_failed(
                 job_id,
                 final_response=final_text,
+                final_response_content=final_content,
                 error=error_text,
             )
 
@@ -462,6 +491,7 @@ class ConversationCoordinator:
                 created_at=job.created_at,
                 updated_at=job.updated_at,
                 final_response=job.final_response,
+                final_response_content=job.final_response_content,
                 error=job.error,
                 steps=job.steps,
             )
@@ -472,16 +502,18 @@ class ConversationCoordinator:
         session_name: str,
         *,
         prompt: str,
-        image_urls: list[str] | None = None,
+        image_urls: list[ImageInput] | None = None,
+        file_attachments: list[FileInput] | None = None,
         raw_content: str,
         is_error: bool,
         scheduled_job: ScheduledCronJobInfo | None = None,
-    ) -> tuple[str, str]:
+        outbound_content_blocks: list[dict[str, Any]] | None = None,
+    ) -> tuple[str, MessageContent, str]:
         lock = await self._session_lock(session_name)
         async with lock:
             deleted = await self._is_session_deleted(session_name)
             if deleted:
-                return "", ""
+                return "", "", ""
             session = await asyncio.to_thread(
                 self._session_store.load_or_create_session,
                 session_name,
@@ -494,6 +526,7 @@ class ConversationCoordinator:
                         user_input=prompt,
                         error_text=raw_content,
                         image_urls=image_urls,
+                        file_attachments=file_attachments,
                         role_card=role_card,
                     )
                 elif scheduled_job is not None:
@@ -503,6 +536,7 @@ class ConversationCoordinator:
                             user_input=prompt,
                             agent_output=raw_content,
                             image_urls=image_urls,
+                            file_attachments=file_attachments,
                             scheduled_job=scheduled_job,
                             role_card=role_card,
                         )
@@ -513,15 +547,26 @@ class ConversationCoordinator:
                         user_input=prompt,
                         agent_output=raw_content,
                         image_urls=image_urls,
+                        file_attachments=file_attachments,
                         role_card=role_card,
                     )
             else:
                 final_text = ""
 
-            if final_text.strip():
-                session.history.append(LLMMessage(role="assistant", content=final_text))
+            final_content = _build_visible_response_content(
+                final_text,
+                outbound_content_blocks=outbound_content_blocks,
+            )
+            if not is_message_content_empty(final_content):
+                session.history.append(
+                    LLMMessage(role="assistant", content=final_content)
+                )
                 await asyncio.to_thread(self._session_store.save_session, session)
-            return final_text, role_card.name
+            return (
+                message_content_to_text(final_content).strip(),
+                final_content,
+                role_card.name,
+            )
 
     async def present_scheduled_notification(
         self,
@@ -603,6 +648,7 @@ class ConversationCoordinator:
         await self._jobs.set_cancelled(
             job_id,
             final_response=JOB_CANCELLED_TEXT,
+            final_response_content=JOB_CANCELLED_TEXT,
         )
 
     async def _session_lock(self, session_name: str) -> asyncio.Lock:
@@ -714,20 +760,26 @@ def _optional_text(value: object) -> str | None:
     return text or None
 
 
-def _supports_keyword_argument(callable_obj: object, argument_name: str) -> bool:
-    try:
-        signature = inspect.signature(callable_obj)
-    except (TypeError, ValueError):
-        return False
-
-    parameter = signature.parameters.get(argument_name)
-    if parameter is None:
-        return False
-
-    return parameter.kind in {
-        inspect.Parameter.POSITIONAL_OR_KEYWORD,
-        inspect.Parameter.KEYWORD_ONLY,
-    }
+def _build_visible_response_content(
+    text: str,
+    *,
+    outbound_content_blocks: list[dict[str, Any]] | None = None,
+) -> MessageContent:
+    blocks: list[dict[str, Any]] = []
+    cleaned_text = str(text or "").strip()
+    if cleaned_text:
+        blocks.append(
+            {
+                "type": TEXT_CONTENT_BLOCK_TYPE,
+                "text": cleaned_text,
+            }
+        )
+    blocks.extend(message_content_blocks(outbound_content_blocks or []))
+    if not blocks:
+        return ""
+    if len(blocks) == 1 and blocks[0].get("type") == TEXT_CONTENT_BLOCK_TYPE:
+        return str(blocks[0].get("text", ""))
+    return blocks
 
 
 def _build_agent_handoff_text(

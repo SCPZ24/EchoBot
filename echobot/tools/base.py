@@ -3,13 +3,30 @@ from __future__ import annotations
 import json
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
-from ..models import LLMMessage, LLMTool, ToolCall
+from ..models import (
+    LLMMessage,
+    LLMTool,
+    MessageContentBlock,
+    ToolCall,
+    message_content_blocks,
+    normalize_image_input,
+)
 
 
-ToolOutput = str | int | float | bool | None | dict[str, Any] | list[Any]
+ToolPayload = str | int | float | bool | None | dict[str, Any] | list[Any]
+
+
+@dataclass(slots=True)
+class ToolExecutionOutput:
+    data: ToolPayload
+    promoted_image_urls: list[dict[str, str]] = field(default_factory=list)
+    outbound_content_blocks: list[MessageContentBlock] = field(default_factory=list)
+
+
+ToolOutput = ToolPayload | ToolExecutionOutput
 
 
 @dataclass(slots=True)
@@ -18,6 +35,8 @@ class ToolResult:
     tool_name: str
     content: str
     is_error: bool = False
+    promoted_image_urls: list[dict[str, str]] = field(default_factory=list)
+    outbound_content_blocks: list[MessageContentBlock] = field(default_factory=list)
 
     def to_message(self) -> LLMMessage:
         return LLMMessage(
@@ -89,10 +108,13 @@ class ToolRegistry:
         except Exception as exc:
             return self._error_result(tool_call, str(exc))
 
+        execution_output = _normalize_execution_output(output)
         return ToolResult(
             call_id=tool_call.id,
             tool_name=tool_call.name,
-            content=_build_payload(output),
+            content=_build_payload(execution_output.data),
+            promoted_image_urls=execution_output.promoted_image_urls,
+            outbound_content_blocks=execution_output.outbound_content_blocks,
         )
 
     async def execute_tool_calls(
@@ -130,7 +152,40 @@ def _parse_arguments(raw_arguments: str) -> dict[str, Any]:
     return parsed
 
 
-def _build_payload(data: ToolOutput, *, is_error: bool = False) -> str:
+def _normalize_execution_output(output: ToolOutput) -> ToolExecutionOutput:
+    if isinstance(output, ToolExecutionOutput):
+        return ToolExecutionOutput(
+            data=output.data,
+            promoted_image_urls=_normalize_promoted_images(output.promoted_image_urls),
+            outbound_content_blocks=_normalize_outbound_content_blocks(
+                output.outbound_content_blocks
+            ),
+        )
+
+    return ToolExecutionOutput(data=output)
+
+
+def _normalize_promoted_images(
+    values: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    normalized_images: list[dict[str, str]] = []
+    for value in values:
+        normalized = normalize_image_input(value)
+        if normalized is not None:
+            normalized_images.append(normalized)
+    return normalized_images
+
+
+def _normalize_outbound_content_blocks(
+    values: list[MessageContentBlock],
+) -> list[MessageContentBlock]:
+    normalized_blocks: list[MessageContentBlock] = []
+    for block in values:
+        normalized_blocks.extend(message_content_blocks([block]))
+    return normalized_blocks
+
+
+def _build_payload(data: ToolPayload, *, is_error: bool = False) -> str:
     payload: dict[str, Any] = {
         "ok": not is_error,
         "result": data,

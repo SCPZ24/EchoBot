@@ -1,10 +1,13 @@
 import {
     cancelChatJob,
+    deleteAttachment,
     requestChatJob,
     requestChatJobTrace,
     requestChatStream,
     requestJson,
     responseToError,
+    uploadChatFile,
+    uploadChatImage,
 } from "./modules/api.js";
 import { createAsrModule } from "./modules/asr.js";
 import { createChatModule } from "./modules/chat.js";
@@ -108,6 +111,7 @@ const chat = createChatModule({
     cancelChatJob: cancelChatJob,
     createSpeechSession: tts.createSpeechSession,
     drainVoicePromptQueue: asr.drainVoicePromptQueue,
+    deleteAttachment: deleteAttachment,
     ensureAudioContextReady: tts.ensureAudioContextReady,
     finalizeSpeechSession: tts.finalizeSpeechSession,
     normalizeSessionName: normalizeSessionName,
@@ -117,8 +121,10 @@ const chat = createChatModule({
     requestChatJobTrace: requestChatJobTrace,
     requestChatStream: requestChatStream,
     resetTracePanel: traces.resetTracePanel,
-    syncCurrentSessionFromServer: sessions.syncCurrentSessionFromServer,
     requestSessionSummaries: sessions.requestSessionSummaries,
+    syncCurrentSessionFromServer: sessions.syncCurrentSessionFromServer,
+    uploadChatFile: uploadChatFile,
+    uploadChatImage: uploadChatImage,
     applyTracePayload: traces.applyTracePayload,
     setActiveBackgroundJob: setActiveBackgroundJob,
     setChatBusy: setChatBusy,
@@ -196,6 +202,21 @@ function wireBasicEvents() {
             form.requestSubmit();
         }
     });
+    if (DOM.composerFileButton) {
+        DOM.composerFileButton.addEventListener("click", () => {
+            chat.handleComposerFileButtonClick();
+        });
+    }
+    if (DOM.composerFileInput) {
+        DOM.composerFileInput.addEventListener("change", () => {
+            void chat.handleComposerFileInputChange();
+        });
+    }
+    if (DOM.composerFiles) {
+        DOM.composerFiles.addEventListener("click", (event) => {
+            void chat.handleComposerFilesClick(event);
+        });
+    }
     if (DOM.composerImageButton) {
         DOM.composerImageButton.addEventListener("click", () => {
             chat.handleComposerImageButtonClick();
@@ -208,7 +229,7 @@ function wireBasicEvents() {
     }
     if (DOM.composerImages) {
         DOM.composerImages.addEventListener("click", (event) => {
-            chat.handleComposerImagesClick(event);
+            void chat.handleComposerImagesClick(event);
         });
     }
     initializeMessageInteractions();
@@ -513,6 +534,12 @@ function setChatBusy(isBusy) {
     if (DOM.sendButton) {
         DOM.sendButton.disabled = isBusy;
     }
+    if (DOM.composerFileButton) {
+        DOM.composerFileButton.disabled = isBusy || Boolean(UI_STATE.activeChatJobId);
+    }
+    if (DOM.composerFileInput) {
+        DOM.composerFileInput.disabled = isBusy || Boolean(UI_STATE.activeChatJobId);
+    }
     if (DOM.composerImageButton) {
         DOM.composerImageButton.disabled = isBusy || Boolean(UI_STATE.activeChatJobId);
     }
@@ -536,7 +563,7 @@ function setChatBusy(isBusy) {
         );
     }
     updateComposerBackgroundJobState();
-    chat.refreshComposerImages();
+    chat.refreshComposerAttachments();
 }
 
 function setActiveBackgroundJob(jobId) {
@@ -558,6 +585,12 @@ function updateComposerBackgroundJobState() {
 
     if (DOM.promptInput) {
         DOM.promptInput.disabled = backgroundJobRunning;
+    }
+    if (DOM.composerFileButton) {
+        DOM.composerFileButton.disabled = backgroundJobRunning || UI_STATE.chatBusy;
+    }
+    if (DOM.composerFileInput) {
+        DOM.composerFileInput.disabled = backgroundJobRunning || UI_STATE.chatBusy;
     }
     if (DOM.composerImageButton) {
         DOM.composerImageButton.disabled = backgroundJobRunning || UI_STATE.chatBusy;
@@ -582,5 +615,5 @@ function updateComposerBackgroundJobState() {
 
     // Keep the latest reply visible when the composer height changes.
     scheduleMessagesScrollToBottom();
-    chat.refreshComposerImages();
+    chat.refreshComposerAttachments();
 }

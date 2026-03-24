@@ -5,6 +5,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from ..agent import AgentCore
+from ..models import FileInput, ImageInput
 from ..runtime.sessions import ChatSession
 from .roles import RoleCard, RoleCardRegistry
 
@@ -115,13 +116,15 @@ class RoleplayEngine:
         *,
         session: ChatSession,
         user_input: str,
-        image_urls: list[str] | None = None,
+        image_urls: list[ImageInput] | None = None,
+        file_attachments: list[FileInput] | None = None,
         role_card: RoleCard,
     ) -> str:
         return await self._generate(
             session=session,
             user_input=user_input,
             image_urls=image_urls,
+            file_attachments=file_attachments,
             role_card=role_card,
             extra_system_messages=[
                 _DIRECT_CHAT_INSTRUCTION,
@@ -134,7 +137,8 @@ class RoleplayEngine:
         *,
         session: ChatSession,
         user_input: str,
-        image_urls: list[str] | None = None,
+        image_urls: list[ImageInput] | None = None,
+        file_attachments: list[FileInput] | None = None,
         role_card: RoleCard,
         on_chunk: StreamCallback,
     ) -> str:
@@ -142,6 +146,7 @@ class RoleplayEngine:
             session=session,
             user_input=user_input,
             image_urls=image_urls,
+            file_attachments=file_attachments,
             role_card=role_card,
             extra_system_messages=[
                 _DIRECT_CHAT_INSTRUCTION,
@@ -155,13 +160,15 @@ class RoleplayEngine:
         *,
         session: ChatSession,
         user_input: str,
-        image_urls: list[str] | None = None,
+        image_urls: list[ImageInput] | None = None,
+        file_attachments: list[FileInput] | None = None,
         role_card: RoleCard,
     ) -> str:
         return await self._generate(
             session=session,
             user_input=user_input,
             image_urls=image_urls,
+            file_attachments=file_attachments,
             role_card=role_card,
             extra_system_messages=[
                 _DELEGATED_ACK_INSTRUCTION,
@@ -176,7 +183,8 @@ class RoleplayEngine:
         *,
         session: ChatSession,
         user_input: str,
-        image_urls: list[str] | None = None,
+        image_urls: list[ImageInput] | None = None,
+        file_attachments: list[FileInput] | None = None,
         role_card: RoleCard,
         on_chunk: StreamCallback,
     ) -> str:
@@ -184,6 +192,7 @@ class RoleplayEngine:
             session=session,
             user_input=user_input,
             image_urls=image_urls,
+            file_attachments=file_attachments,
             role_card=role_card,
             extra_system_messages=[
                 _DELEGATED_ACK_INSTRUCTION,
@@ -200,7 +209,8 @@ class RoleplayEngine:
         session: ChatSession,
         user_input: str,
         agent_output: str,
-        image_urls: list[str] | None = None,
+        image_urls: list[ImageInput] | None = None,
+        file_attachments: list[FileInput] | None = None,
         scheduled_job: ScheduledCronJobInfo,
         role_card: RoleCard,
     ) -> str:
@@ -214,6 +224,7 @@ class RoleplayEngine:
             session=session,
             user_input=request_text,
             image_urls=image_urls,
+            file_attachments=file_attachments,
             role_card=role_card,
             extra_system_messages=[
                 _SCHEDULED_SETUP_PRESENTATION_INSTRUCTION,
@@ -249,7 +260,8 @@ class RoleplayEngine:
         session: ChatSession,
         user_input: str,
         agent_output: str,
-        image_urls: list[str] | None = None,
+        image_urls: list[ImageInput] | None = None,
+        file_attachments: list[FileInput] | None = None,
         role_card: RoleCard,
     ) -> str:
         request_text = (
@@ -261,6 +273,7 @@ class RoleplayEngine:
             session=session,
             user_input=request_text,
             image_urls=image_urls,
+            file_attachments=file_attachments,
             role_card=role_card,
             extra_system_messages=[
                 _AGENT_RESULT_PRESENTATION_INSTRUCTION,
@@ -274,7 +287,8 @@ class RoleplayEngine:
         session: ChatSession,
         user_input: str,
         error_text: str,
-        image_urls: list[str] | None = None,
+        image_urls: list[ImageInput] | None = None,
+        file_attachments: list[FileInput] | None = None,
         role_card: RoleCard,
     ) -> str:
         request_text = (
@@ -286,6 +300,7 @@ class RoleplayEngine:
             session=session,
             user_input=request_text,
             image_urls=image_urls,
+            file_attachments=file_attachments,
             role_card=role_card,
             extra_system_messages=[
                 _AGENT_FAILURE_PRESENTATION_INSTRUCTION,
@@ -299,7 +314,8 @@ class RoleplayEngine:
         *,
         session: ChatSession,
         user_input: str,
-        image_urls: list[str] | None = None,
+        image_urls: list[ImageInput] | None = None,
+        file_attachments: list[FileInput] | None = None,
         role_card: RoleCard,
         extra_system_messages: list[str],
         fallback_text: str,
@@ -316,6 +332,7 @@ class RoleplayEngine:
             response = await self._role_agent.ask(
                 user_input,
                 image_urls=image_urls,
+                file_attachments=file_attachments,
                 history=history,
                 extra_system_messages=system_messages,
                 temperature=self._default_temperature,
@@ -345,7 +362,8 @@ class RoleplayEngine:
         *,
         session: ChatSession,
         user_input: str,
-        image_urls: list[str] | None = None,
+        image_urls: list[ImageInput] | None = None,
+        file_attachments: list[FileInput] | None = None,
         role_card: RoleCard,
         extra_system_messages: list[str],
         fallback_text: str,
@@ -365,6 +383,7 @@ class RoleplayEngine:
             async for chunk in self._role_agent.ask_stream(
                 user_input,
                 image_urls=image_urls,
+                file_attachments=file_attachments,
                 history=history,
                 extra_system_messages=system_messages,
                 temperature=self._default_temperature,
@@ -387,6 +406,7 @@ class RoleplayEngine:
                 session=session,
                 user_input=user_input,
                 image_urls=image_urls,
+                file_attachments=file_attachments,
                 role_card=role_card,
                 extra_system_messages=extra_system_messages,
                 fallback_text=fallback_text,

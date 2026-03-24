@@ -4,6 +4,7 @@ import asyncio
 import logging
 from typing import Any
 
+from ..attachments import AttachmentStore
 from .base import BaseChannel
 from .bus import MessageBus
 from .config import ChannelsConfig
@@ -15,9 +16,16 @@ logger = logging.getLogger(__name__)
 
 
 class ChannelManager:
-    def __init__(self, config: ChannelsConfig, bus: MessageBus) -> None:
+    def __init__(
+        self,
+        config: ChannelsConfig,
+        bus: MessageBus,
+        *,
+        attachment_store: AttachmentStore | None = None,
+    ) -> None:
         self.config = config
         self.bus = bus
+        self.attachment_store = attachment_store
         self.channels: dict[str, BaseChannel] = {}
         self._channel_tasks: dict[str, asyncio.Task[None]] = {}
         self._dispatch_task: asyncio.Task[None] | None = None
@@ -85,6 +93,7 @@ class ChannelManager:
             self.channels[name] = definition.channel_cls(
                 channel_config,
                 self.bus,
+                attachment_store=self.attachment_store,
             )
 
     async def _run_channel(self, name: str, channel: BaseChannel) -> None:

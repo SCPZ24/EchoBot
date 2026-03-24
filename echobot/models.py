@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -8,9 +8,12 @@ from typing import Any, Literal
 MessageRole = Literal["system", "user", "assistant", "tool"]
 MessageContentBlock = dict[str, Any]
 MessageContent = str | list[MessageContentBlock]
+ImageInput = str | Mapping[str, Any]
+FileInput = str | Mapping[str, Any]
 
 TEXT_CONTENT_BLOCK_TYPE = "text"
 IMAGE_URL_CONTENT_BLOCK_TYPE = "image_url"
+FILE_ATTACHMENT_CONTENT_BLOCK_TYPE = "file_attachment"
 
 
 @dataclass(slots=True)
@@ -178,15 +181,40 @@ def _nested_usage_int(
 
 def build_user_message_content(
     text: str,
-    image_urls: Sequence[str] | None = None,
+    image_urls: Sequence[ImageInput] | None = None,
+    file_attachments: Sequence[FileInput] | None = None,
+) -> MessageContent:
+    return build_message_content(
+        text,
+        image_urls=image_urls,
+        file_attachments=file_attachments,
+    )
+
+
+def build_message_content(
+    text: str,
+    *,
+    image_urls: Sequence[ImageInput] | None = None,
+    file_attachments: Sequence[FileInput] | None = None,
 ) -> MessageContent:
     cleaned_text = str(text or "").strip()
-    cleaned_image_urls = [
-        str(url).strip()
-        for url in image_urls or []
-        if str(url).strip()
+    cleaned_images = [
+        image_payload
+        for image_payload in (
+            normalize_image_input(image_input)
+            for image_input in image_urls or []
+        )
+        if image_payload is not None
     ]
-    if not cleaned_image_urls:
+    cleaned_files = [
+        file_payload
+        for file_payload in (
+            normalize_file_attachment_input(file_input)
+            for file_input in file_attachments or []
+        )
+        if file_payload is not None
+    ]
+    if not cleaned_images and not cleaned_files:
         return cleaned_text
 
     content_blocks: list[MessageContentBlock] = []
@@ -197,13 +225,18 @@ def build_user_message_content(
                 "text": cleaned_text,
             }
         )
-    for image_url in cleaned_image_urls:
+    for file_attachment in cleaned_files:
+        content_blocks.append(
+            {
+                "type": FILE_ATTACHMENT_CONTENT_BLOCK_TYPE,
+                "file_attachment": file_attachment,
+            }
+        )
+    for image_url in cleaned_images:
         content_blocks.append(
             {
                 "type": IMAGE_URL_CONTENT_BLOCK_TYPE,
-                "image_url": {
-                    "url": image_url,
-                },
+                "image_url": image_url,
             }
         )
     return content_blocks
@@ -217,10 +250,63 @@ def normalize_message_content(value: Any) -> MessageContent:
 
     blocks: list[MessageContentBlock] = []
     for item in value:
-        if not isinstance(item, dict):
-            continue
-        blocks.append(dict(item))
+        normalized_block = normalize_message_content_block(item)
+        if normalized_block is not None:
+            blocks.append(normalized_block)
     return blocks
+
+
+def normalize_message_content_block(value: Any) -> MessageContentBlock | None:
+    if not isinstance(value, Mapping):
+        return None
+
+    block_type = str(value.get("type", "")).strip()
+    if not block_type:
+        return None
+
+    if block_type == TEXT_CONTENT_BLOCK_TYPE:
+        text = str(value.get("text", "")).strip()
+        if not text:
+            return None
+        return {
+            "type": TEXT_CONTENT_BLOCK_TYPE,
+            "text": text,
+        }
+
+    if block_type == IMAGE_URL_CONTENT_BLOCK_TYPE:
+        image_url = normalize_image_input(value.get("image_url"))
+        if image_url is None:
+            return None
+        return {
+            "type": IMAGE_URL_CONTENT_BLOCK_TYPE,
+            "image_url": image_url,
+        }
+
+    if block_type == FILE_ATTACHMENT_CONTENT_BLOCK_TYPE:
+        file_attachment = normalize_file_attachment_input(value.get("file_attachment"))
+        if file_attachment is None:
+            return None
+        return {
+            "type": FILE_ATTACHMENT_CONTENT_BLOCK_TYPE,
+            "file_attachment": file_attachment,
+        }
+
+    return dict(value)
+
+
+def message_content_blocks(content: MessageContent) -> list[MessageContentBlock]:
+    normalized = normalize_message_content(content)
+    if isinstance(normalized, str):
+        cleaned_text = normalized.strip()
+        if not cleaned_text:
+            return []
+        return [
+            {
+                "type": TEXT_CONTENT_BLOCK_TYPE,
+                "text": cleaned_text,
+            }
+        ]
+    return normalized
 
 
 def message_content_to_text(content: MessageContent) -> str:
@@ -241,6 +327,12 @@ def message_content_to_text(content: MessageContent) -> str:
 
         if block_type == IMAGE_URL_CONTENT_BLOCK_TYPE:
             text_parts.append("[image]")
+            continue
+
+        if block_type == FILE_ATTACHMENT_CONTENT_BLOCK_TYPE:
+            summary = file_attachment_summary(block.get("file_attachment"))
+            if summary:
+                text_parts.append(summary)
             continue
 
         if block_type:
@@ -275,6 +367,115 @@ def is_message_content_empty(content: MessageContent) -> bool:
     if isinstance(content, str):
         return not content.strip()
 
-    return len(message_content_image_urls(content)) == 0 and not message_content_to_text(
-        content
-    ).strip()
+    return (
+        len(message_content_image_urls(content)) == 0
+        and len(message_content_file_attachments(content)) == 0
+        and not message_content_to_text(content).strip()
+    )
+
+
+def normalize_image_input(value: ImageInput) -> dict[str, str] | None:
+    if isinstance(value, Mapping):
+        url = str(value.get("url", "")).strip()
+        if not url:
+            return None
+
+        image_payload = {"url": url}
+        preview_url = str(value.get("preview_url", "")).strip()
+        if preview_url:
+            image_payload["preview_url"] = preview_url
+        attachment_id = str(value.get("attachment_id", "")).strip()
+        if attachment_id:
+            image_payload["attachment_id"] = attachment_id
+        return image_payload
+
+    url = str(value or "").strip()
+    if not url:
+        return None
+    return {"url": url}
+
+
+def normalize_file_attachment_input(value: FileInput) -> dict[str, Any] | None:
+    if isinstance(value, Mapping):
+        attachment_id = str(value.get("attachment_id", "")).strip()
+        download_url = str(value.get("download_url", "")).strip()
+        name = str(value.get("name", "")).strip()
+        workspace_path = str(value.get("workspace_path", "")).strip()
+        content_type = str(value.get("content_type", "")).strip()
+        size_bytes = _optional_positive_int(value.get("size_bytes"))
+
+        if not any([attachment_id, download_url, name, workspace_path]):
+            return None
+
+        normalized: dict[str, Any] = {
+            "name": name or "file",
+        }
+        if attachment_id:
+            normalized["attachment_id"] = attachment_id
+        if download_url:
+            normalized["download_url"] = download_url
+        if workspace_path:
+            normalized["workspace_path"] = workspace_path
+        if content_type:
+            normalized["content_type"] = content_type
+        if size_bytes is not None:
+            normalized["size_bytes"] = size_bytes
+        return normalized
+
+    attachment_id = str(value or "").strip()
+    if not attachment_id:
+        return None
+    return {
+        "attachment_id": attachment_id,
+        "name": "file",
+    }
+
+
+def message_content_file_attachments(content: MessageContent) -> list[dict[str, Any]]:
+    if isinstance(content, str):
+        return []
+
+    file_attachments: list[dict[str, Any]] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if str(block.get("type", "")).strip() != FILE_ATTACHMENT_CONTENT_BLOCK_TYPE:
+            continue
+
+        normalized = normalize_file_attachment_input(block.get("file_attachment"))
+        if normalized is not None:
+            file_attachments.append(normalized)
+    return file_attachments
+
+
+def file_attachment_summary(value: Any) -> str:
+    normalized = normalize_file_attachment_input(value)
+    if normalized is None:
+        return ""
+
+    name = str(normalized.get("name", "")).strip() or "file"
+    details = [name]
+
+    workspace_path = str(normalized.get("workspace_path", "")).strip()
+    if workspace_path:
+        details.append(f"path={workspace_path}")
+
+    content_type = str(normalized.get("content_type", "")).strip()
+    if content_type:
+        details.append(f"type={content_type}")
+
+    size_bytes = _optional_positive_int(normalized.get("size_bytes"))
+    if size_bytes is not None:
+        details.append(f"size={size_bytes} bytes")
+
+    return "file: " + " | ".join(details)
+
+
+def _optional_positive_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed <= 0:
+        return None
+    return parsed

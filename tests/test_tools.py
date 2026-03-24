@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import threading
 import tempfile
@@ -8,7 +9,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
-from echobot import AgentCore, LLMMessage, WebRequestTool, create_basic_tool_registry
+from echobot import (
+    AgentCore,
+    AttachmentStore,
+    LLMMessage,
+    WebRequestTool,
+    create_basic_tool_registry,
+)
 from echobot.models import LLMResponse, ToolCall
 from echobot.providers.base import LLMProvider
 from echobot.tools import BaseTool, ToolRegistry
@@ -176,6 +183,118 @@ class AgentToolLoopTests(unittest.IsolatedAsyncioTestCase):
 
 
 class BasicToolRegistryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_view_image_tool_promotes_image_into_model_context(self) -> None:
+        tiny_png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a8u8AAAAASUVORK5CYII="
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            image_path = workspace / "pixel.png"
+            image_path.write_bytes(tiny_png)
+            attachment_store = AttachmentStore(workspace / ".echobot" / "attachments")
+            registry = create_basic_tool_registry(
+                workspace,
+                attachment_store=attachment_store,
+            )
+
+            result = await registry.execute(
+                ToolCall(
+                    id="call_view_image",
+                    name="view_image",
+                    arguments='{"path": "pixel.png"}',
+                )
+            )
+
+            payload = json.loads(result.content)
+            self.assertTrue(payload["ok"])
+            self.assertEqual("pixel.png", payload["result"]["path"])
+            self.assertEqual(1, len(result.promoted_image_urls))
+            self.assertEqual(
+                "attachment://" + payload["result"]["attachment_id"],
+                result.promoted_image_urls[0]["url"],
+            )
+
+    def test_registry_omits_view_image_when_vision_is_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            attachment_store = AttachmentStore(workspace / ".echobot" / "attachments")
+            registry = create_basic_tool_registry(
+                workspace,
+                attachment_store=attachment_store,
+                supports_image_input=False,
+            )
+
+            self.assertNotIn("view_image", registry.names())
+            self.assertIn("send_image_to_user", registry.names())
+            self.assertIn("send_file_to_user", registry.names())
+
+    async def test_send_image_tool_returns_outbound_image_block(self) -> None:
+        tiny_png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a8u8AAAAASUVORK5CYII="
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            image_path = workspace / "preview.png"
+            image_path.write_bytes(tiny_png)
+            attachment_store = AttachmentStore(workspace / ".echobot" / "attachments")
+            registry = create_basic_tool_registry(
+                workspace,
+                attachment_store=attachment_store,
+            )
+
+            result = await registry.execute(
+                ToolCall(
+                    id="call_send_image",
+                    name="send_image_to_user",
+                    arguments='{"path": "preview.png"}',
+                )
+            )
+
+            payload = json.loads(result.content)
+            self.assertTrue(payload["ok"])
+            self.assertEqual("preview.png", payload["result"]["path"])
+            self.assertEqual(1, len(result.outbound_content_blocks))
+            self.assertEqual("image_url", result.outbound_content_blocks[0]["type"])
+            self.assertEqual(
+                "attachment://" + payload["result"]["attachment_id"],
+                result.outbound_content_blocks[0]["image_url"]["url"],
+            )
+
+    async def test_send_file_tool_returns_outbound_file_block(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            file_path = workspace / "report.txt"
+            file_path.write_text("hello", encoding="utf-8")
+            attachment_store = AttachmentStore(workspace / ".echobot" / "attachments")
+            registry = create_basic_tool_registry(
+                workspace,
+                attachment_store=attachment_store,
+            )
+
+            result = await registry.execute(
+                ToolCall(
+                    id="call_send_file",
+                    name="send_file_to_user",
+                    arguments='{"path": "report.txt"}',
+                )
+            )
+
+            payload = json.loads(result.content)
+            self.assertTrue(payload["ok"])
+            self.assertEqual("report.txt", payload["result"]["path"])
+            self.assertEqual(1, len(result.outbound_content_blocks))
+            self.assertEqual("file_attachment", result.outbound_content_blocks[0]["type"])
+            self.assertEqual(
+                "report.txt",
+                result.outbound_content_blocks[0]["file_attachment"]["name"],
+            )
+            self.assertEqual(
+                "report.txt",
+                result.outbound_content_blocks[0]["file_attachment"]["workspace_path"],
+            )
+
     def test_decode_command_output_prefers_utf8_when_locale_is_not_utf8(self) -> None:
         raw_bytes = "Beijing: 🌫  +34°F\n".encode("utf-8")
 

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import base64
 import logging
-import mimetypes
 from abc import ABC, abstractmethod
 from typing import Any
 
+from ..attachments import AttachmentStore
+from ..models import normalize_file_attachment_input, normalize_image_input
 from .bus import MessageBus
-from .types import ChannelAddress, InboundMessage, OutboundMessage
+from .types import ChannelAddress, FileInput, ImageInput, InboundMessage, OutboundMessage
 
 
 logger = logging.getLogger(__name__)
@@ -16,9 +16,15 @@ logger = logging.getLogger(__name__)
 class BaseChannel(ABC):
     name: str = "base"
 
-    def __init__(self, config: Any, bus: MessageBus) -> None:
+    def __init__(
+        self,
+        config: Any,
+        bus: MessageBus,
+        attachment_store: AttachmentStore | None = None,
+    ) -> None:
         self.config = config
         self.bus = bus
+        self.attachment_store = attachment_store
         self._running = False
 
     @abstractmethod
@@ -48,31 +54,42 @@ class BaseChannel(ABC):
             if part
         )
 
+    def should_accept_sender(self, sender_id: str) -> bool:
+        if self.is_allowed(sender_id):
+            return True
+        logger.warning(
+            "Ignoring message from %s on channel %s: not allowed",
+            sender_id,
+            self.name,
+        )
+        return False
+
     async def _publish_inbound_message(
         self,
         *,
         sender_id: str,
         chat_id: str,
         text: str,
-        image_urls: list[str] | None = None,
+        image_urls: list[ImageInput] | None = None,
+        files: list[FileInput] | None = None,
         thread_id: str | None = None,
         user_id: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> None:
-        if not self.is_allowed(sender_id):
-            logger.warning(
-                "Ignoring message from %s on channel %s: not allowed",
-                sender_id,
-                self.name,
-            )
+        if not self.should_accept_sender(sender_id):
             return
         cleaned_text = text.strip()
-        cleaned_image_urls = [
-            str(url).strip()
-            for url in image_urls or []
-            if str(url).strip()
-        ]
-        if not cleaned_text and not cleaned_image_urls:
+        cleaned_image_urls = []
+        for item in image_urls or []:
+            normalized_item = normalize_image_input(item)
+            if normalized_item is not None:
+                cleaned_image_urls.append(normalized_item)
+        cleaned_files = []
+        for item in files or []:
+            normalized_item = normalize_file_attachment_input(item)
+            if normalized_item is not None:
+                cleaned_files.append(normalized_item)
+        if not cleaned_text and not cleaned_image_urls and not cleaned_files:
             return
         address = ChannelAddress(
             channel=self.name,
@@ -86,6 +103,7 @@ class BaseChannel(ABC):
                 sender_id=str(sender_id),
                 text=cleaned_text,
                 image_urls=cleaned_image_urls,
+                files=cleaned_files,
                 metadata=dict(metadata or {}),
             )
         )
@@ -108,33 +126,3 @@ class BaseChannel(ABC):
             user_id=user_id,
             metadata=metadata,
         )
-
-
-def build_image_data_url(
-    image_bytes: bytes,
-    *,
-    content_type: str | None = None,
-    filename: str | None = None,
-) -> str:
-    resolved_content_type = guess_image_content_type(
-        content_type=content_type,
-        filename=filename,
-    )
-    encoded_bytes = base64.b64encode(image_bytes).decode("ascii")
-    return f"data:{resolved_content_type};base64,{encoded_bytes}"
-
-
-def guess_image_content_type(
-    *,
-    content_type: str | None = None,
-    filename: str | None = None,
-) -> str:
-    cleaned_content_type = str(content_type or "").strip().lower()
-    if cleaned_content_type.startswith("image/"):
-        return cleaned_content_type
-
-    guessed_type, _encoding = mimetypes.guess_type(str(filename or ""))
-    if guessed_type and guessed_type.startswith("image/"):
-        return guessed_type
-
-    return "image/jpeg"

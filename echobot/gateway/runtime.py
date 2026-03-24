@@ -6,12 +6,18 @@ import logging
 from ..channels import InboundMessage, MessageBus, OutboundMessage
 from ..channels.types import DeliveryTarget
 from ..commands.bindings import GatewayCommandContext, dispatch_gateway_command
+from ..models import MessageContent, is_message_content_empty, message_content_to_text
 from ..runtime.scheduled_tasks import (
     build_cron_job_executor as build_shared_cron_job_executor,
     build_heartbeat_executor as build_shared_heartbeat_executor,
 )
 from ..runtime.bootstrap import RuntimeContext
 from ..runtime.session_service import SessionLifecycleService
+from ..turn_inputs import (
+    has_file_processing_capability,
+    resolve_attachment_files,
+    resolve_file_attachment_route_mode,
+)
 from .delivery import DeliveryStore
 from .route_sessions import RouteSessionStore
 from .session_service import GatewaySessionService
@@ -122,23 +128,38 @@ class GatewayRuntime:
             message.metadata,
         )
         try:
+            image_urls = (
+                list(message.image_urls)
+                if self._context.supports_image_input
+                else []
+            )
+            file_attachments = await _resolve_gateway_files(
+                message,
+                self._context.attachment_store,
+                self._context.workspace,
+            )
             execution = await self._context.coordinator.handle_user_turn(
                 route_session.session_name,
                 message.text,
-                image_urls=message.image_urls,
+                image_urls=image_urls,
+                file_attachments=file_attachments,
+                route_mode=await self._resolve_effective_route_mode(
+                    route_session.session_name,
+                    has_file_attachments=bool(file_attachments),
+                ),
                 completion_callback=self._completion_callback_for_session(
                     route_session.session_name,
                 ),
             )
-            content = execution.response_text.strip()
+            content: MessageContent = execution.response_content
             await self._session_service.touch_route_session(
                 route_key,
                 route_session.session_name,
                 updated_at=execution.session.updated_at,
             )
-            if not content and execution.delegated and not execution.completed:
+            if is_message_content_empty(content) and execution.delegated and not execution.completed:
                 return
-            if not content:
+            if is_message_content_empty(content):
                 content = "Model returned no text content."
         except ValueError as exc:
             content = str(exc)
@@ -147,7 +168,7 @@ class GatewayRuntime:
         await self._bus.publish_outbound(
             OutboundMessage(
                 address=message.address,
-                text=content,
+                content=content,
                 metadata=dict(message.metadata),
             )
         )
@@ -159,7 +180,7 @@ class GatewayRuntime:
         async def notify(job) -> None:
             await self._publish_session_response(
                 session_name,
-                job.final_response,
+                job.final_response_content,
                 metadata={
                     "async_result": True,
                     "job_id": job.job_id,
@@ -182,7 +203,7 @@ class GatewayRuntime:
     async def _notify_session(
         self,
         session_name: str,
-        content: str,
+        content: MessageContent,
         *,
         kind: str,
         title: str,
@@ -198,13 +219,13 @@ class GatewayRuntime:
     async def _publish_session_response(
         self,
         session_name: str,
-        content: str,
+        content: MessageContent,
         *,
         metadata: dict[str, object] | None = None,
     ) -> None:
         target = await self._session_service.get_session_target(session_name)
         if target is None:
-            logger.info("[reply] %s", content)
+            logger.info("[reply] %s", message_content_to_text(content))
             return
         next_metadata = dict(target.metadata)
         if metadata is not None:
@@ -212,12 +233,12 @@ class GatewayRuntime:
         await self._bus.publish_outbound(
             OutboundMessage(
                 address=target.address,
-                text=content,
+                content=content,
                 metadata=next_metadata,
             )
         )
 
-    async def _notify_latest(self, content: str) -> None:
+    async def _notify_latest(self, content: MessageContent) -> None:
         target = await self._session_service.get_latest_target()
         await self._publish_notification(
             target,
@@ -229,14 +250,15 @@ class GatewayRuntime:
     async def _publish_notification(
         self,
         target: DeliveryTarget | None,
-        content: str,
+        content: MessageContent,
         *,
         kind: str,
         title: str,
     ) -> None:
         if target is None:
             logger.info("[%s] %s", kind, title)
-            for line in content.splitlines() or [content]:
+            text_content = message_content_to_text(content)
+            for line in text_content.splitlines() or [text_content]:
                 logger.info("[%s] %s", kind, line)
             return
         metadata = dict(target.metadata)
@@ -246,7 +268,7 @@ class GatewayRuntime:
         await self._bus.publish_outbound(
             OutboundMessage(
                 address=target.address,
-                text=content,
+                content=content,
                 metadata=metadata,
             )
         )
@@ -256,13 +278,39 @@ class GatewayRuntime:
         session_name: str,
         kind: str,
         title: str,
-        content: str,
+        content: MessageContent,
     ) -> None:
         await self._notify_session(
             session_name,
             content,
             kind=kind,
             title=title,
+        )
+
+    async def _resolve_effective_route_mode(
+        self,
+        session_name: str,
+        *,
+        has_file_attachments: bool,
+    ):
+        can_process_files = False
+        current_route_mode = None
+        if has_file_attachments:
+            can_process_files = has_file_processing_capability(
+                self._context.skill_registry,
+                getattr(self._context, "tool_registry_factory", None),
+                session_name,
+            )
+        if can_process_files:
+            current_route_mode = await self._context.coordinator.current_route_mode(
+                session_name,
+            )
+
+        return resolve_file_attachment_route_mode(
+            requested_route_mode=None,
+            current_route_mode=current_route_mode,
+            has_file_attachments=has_file_attachments,
+            can_process_files=can_process_files,
         )
 
     async def _shutdown(self) -> None:
@@ -285,3 +333,19 @@ class GatewayRuntime:
                 lock = asyncio.Lock()
                 self._route_locks[route_key] = lock
             return lock
+
+
+async def _resolve_gateway_files(
+    message: InboundMessage,
+    attachment_store,
+    workspace,
+) -> list[dict[str, object]]:
+    if not message.files:
+        return []
+
+    return await asyncio.to_thread(
+        resolve_attachment_files,
+        attachment_store,
+        workspace,
+        message.files,
+    )

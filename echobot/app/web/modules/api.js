@@ -6,6 +6,33 @@ export async function requestJson(url, options) {
     return await response.json();
 }
 
+export async function uploadChatImage(file) {
+    const formData = new FormData();
+    formData.append("file", file);
+    return await requestJson("/api/attachments/images", {
+        method: "POST",
+        body: formData,
+    });
+}
+
+export async function uploadChatFile(file) {
+    const formData = new FormData();
+    formData.append("file", file);
+    return await requestJson("/api/attachments/files", {
+        method: "POST",
+        body: formData,
+    });
+}
+
+export async function deleteAttachment(attachmentId) {
+    const response = await fetch(`/api/attachments/${encodeURIComponent(attachmentId)}`, {
+        method: "DELETE",
+    });
+    if (!response.ok) {
+        throw await responseToError(response);
+    }
+}
+
 export async function requestChatStream(payload, handlers) {
     const response = await fetch("/api/chat/stream", {
         method: "POST",

@@ -5,8 +5,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..attachments import AttachmentStore, DEFAULT_FILE_BUDGET, FileBudget
 from ..agent import AgentCore
 from ..config import configure_runtime_logging, load_env_file
+from ..images import DEFAULT_IMAGE_BUDGET, ImageBudget
 from ..memory import ReMeLightSettings, ReMeLightSupport
 from ..orchestration import (
     ConversationCoordinator,
@@ -51,6 +53,8 @@ class RuntimeOptions:
 @dataclass(slots=True)
 class RuntimeContext:
     workspace: Path
+    attachment_store: AttachmentStore
+    supports_image_input: bool
     agent: AgentCore
     session_store: SessionStore
     agent_session_store: SessionStore
@@ -82,13 +86,21 @@ def build_runtime_context(
     lightweight_max_tokens = _env_int("ECHOBOT_LIGHTWEIGHT_MAX_TOKENS", 4096)
     agent_max_steps = _env_int("ECHOBOT_AGENT_MAX_STEPS", 50)
     settings = OpenAICompatibleSettings.from_env()
+    supports_image_input = _env_bool("ECHOBOT_LLM_SUPPORTS_IMAGE_INPUT", True)
+    attachment_store = AttachmentStore(
+        workspace / ".echobot" / "attachments",
+        image_budget=_image_budget_from_env(),
+        file_budget=_file_budget_from_env(),
+    )
     decider_provider = _build_provider_from_env(
         prefix="DECIDER_LLM_",
         fallback_settings=settings,
+        attachment_store=attachment_store,
     )
     role_provider = _build_provider_from_env(
         prefix="ROLE_LLM_",
         fallback_settings=settings,
+        attachment_store=attachment_store,
     )
 
     memory_support = None
@@ -99,7 +111,10 @@ def build_runtime_context(
         )
         memory_support = ReMeLightSupport(memory_settings)
 
-    provider = OpenAICompatibleProvider(settings)
+    provider = OpenAICompatibleProvider(
+        settings,
+        attachment_store=attachment_store,
+    )
     cron_store_path = workspace / ".echobot" / "cron" / "jobs.json"
     heartbeat_file_path = _heartbeat_file_path(workspace)
     heartbeat_interval_seconds = _heartbeat_interval_seconds(options)
@@ -107,6 +122,7 @@ def build_runtime_context(
         provider,
         system_prompt=build_default_system_prompt(
             workspace,
+            supports_image_input=supports_image_input,
             enable_project_memory=memory_support is not None,
             memory_workspace=(
                 memory_support.working_dir
@@ -128,6 +144,8 @@ def build_runtime_context(
     tool_registry_factory = _build_tool_registry_factory(
         options,
         workspace=workspace,
+        attachment_store=attachment_store,
+        supports_image_input=supports_image_input,
         memory_support=memory_support,
         cron_service=cron_service,
     )
@@ -179,6 +197,8 @@ def build_runtime_context(
 
     return RuntimeContext(
         workspace=workspace,
+        attachment_store=attachment_store,
+        supports_image_input=supports_image_input,
         agent=agent,
         session_store=session_store,
         agent_session_store=agent_session_store,
@@ -201,6 +221,8 @@ def _build_tool_registry_factory(
     options: RuntimeOptions,
     *,
     workspace: Path,
+    attachment_store: AttachmentStore,
+    supports_image_input: bool,
     memory_support: ReMeLightSupport | None,
     cron_service: CronService,
 ) -> ToolRegistryFactory:
@@ -209,6 +231,8 @@ def _build_tool_registry_factory(
             return None
         return create_basic_tool_registry(
             workspace,
+            attachment_store=attachment_store,
+            supports_image_input=supports_image_input,
             memory_support=memory_support,
             cron_service=cron_service,
             session_name=session_name,
@@ -290,6 +314,43 @@ def _env_bool(name: str, default: bool) -> bool:
     return cleaned not in {"0", "false", "no", "off"}
 
 
+def _image_budget_from_env() -> ImageBudget:
+    defaults = DEFAULT_IMAGE_BUDGET
+    return ImageBudget(
+        max_input_bytes=_env_int(
+            "ECHOBOT_IMAGE_MAX_INPUT_BYTES",
+            defaults.max_input_bytes,
+        ),
+        max_output_bytes=_env_int(
+            "ECHOBOT_IMAGE_MAX_OUTPUT_BYTES",
+            defaults.max_output_bytes,
+        ),
+        max_side=_env_int(
+            "ECHOBOT_IMAGE_MAX_SIDE",
+            defaults.max_side,
+        ),
+        max_pixels=_env_int(
+            "ECHOBOT_IMAGE_MAX_PIXELS",
+            defaults.max_pixels,
+        ),
+        start_quality=defaults.start_quality,
+        min_quality=defaults.min_quality,
+        quality_step=defaults.quality_step,
+        resize_step=defaults.resize_step,
+        max_resize_attempts=defaults.max_resize_attempts,
+    )
+
+
+def _file_budget_from_env() -> FileBudget:
+    defaults = DEFAULT_FILE_BUDGET
+    return FileBudget(
+        max_input_bytes=_env_int(
+            "ECHOBOT_FILE_MAX_INPUT_BYTES",
+            defaults.max_input_bytes,
+        ),
+    )
+
+
 def _resolve_runtime_path(workspace: Path, path: str | Path) -> Path:
     resolved_path = Path(path).expanduser()
     if resolved_path.is_absolute():
@@ -305,12 +366,17 @@ def _build_provider_from_env(
     *,
     prefix: str,
     fallback_settings: OpenAICompatibleSettings,
+    attachment_store: AttachmentStore,
 ) -> OpenAICompatibleProvider:
     if _has_provider_env(prefix):
         return OpenAICompatibleProvider(
             OpenAICompatibleSettings.from_env(prefix=prefix),
+            attachment_store=attachment_store,
         )
-    return OpenAICompatibleProvider(fallback_settings)
+    return OpenAICompatibleProvider(
+        fallback_settings,
+        attachment_store=attachment_store,
+    )
 
 
 def _has_provider_env(prefix: str) -> bool:

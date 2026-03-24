@@ -12,6 +12,7 @@ from echobot.config import (
     _configure_loguru_reme_logging,
     configure_runtime_logging,
 )
+from echobot.images import DEFAULT_IMAGE_BUDGET
 from echobot.runtime.bootstrap import RuntimeOptions, build_runtime_context
 
 
@@ -176,3 +177,85 @@ class RuntimeBootstrapConfigTests(unittest.TestCase):
                 )
 
             self.assertFalse(context.coordinator._delegated_ack_enabled)
+
+    def test_build_runtime_context_reads_image_budget_from_env_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            env_file = workspace / ".env"
+            env_file.write_text(
+                "\n".join(
+                    [
+                        "LLM_API_KEY=test-key",
+                        "LLM_MODEL=test-model",
+                        "LLM_BASE_URL=https://example.com/v1",
+                        "LLM_TIMEOUT=60",
+                        "ECHOBOT_IMAGE_MAX_INPUT_BYTES=31457280",
+                        "ECHOBOT_IMAGE_MAX_OUTPUT_BYTES=6291456",
+                        "ECHOBOT_IMAGE_MAX_SIDE=4096",
+                        "ECHOBOT_IMAGE_MAX_PIXELS=32000000",
+                        "ECHOBOT_FILE_MAX_INPUT_BYTES=10485760",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(os.environ, {}, clear=True):
+                context = build_runtime_context(
+                    RuntimeOptions(
+                        workspace=workspace,
+                        no_memory=True,
+                        no_tools=True,
+                        no_skills=True,
+                        no_heartbeat=True,
+                    ),
+                    load_session_state=False,
+                )
+
+            budget = context.attachment_store.image_budget
+            self.assertEqual(31_457_280, budget.max_input_bytes)
+            self.assertEqual(6_291_456, budget.max_output_bytes)
+            self.assertEqual(4096, budget.max_side)
+            self.assertEqual(32_000_000, budget.max_pixels)
+            self.assertEqual(
+                DEFAULT_IMAGE_BUDGET.start_quality,
+                budget.start_quality,
+            )
+            self.assertEqual(
+                10_485_760,
+                context.attachment_store.file_budget.max_input_bytes,
+            )
+
+    def test_build_runtime_context_reads_image_input_toggle_from_env_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            env_file = workspace / ".env"
+            env_file.write_text(
+                "\n".join(
+                    [
+                        "LLM_API_KEY=test-key",
+                        "LLM_MODEL=test-model",
+                        "LLM_BASE_URL=https://example.com/v1",
+                        "LLM_TIMEOUT=60",
+                        "ECHOBOT_LLM_SUPPORTS_IMAGE_INPUT=false",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(os.environ, {}, clear=True):
+                context = build_runtime_context(
+                    RuntimeOptions(
+                        workspace=workspace,
+                        no_memory=True,
+                        no_skills=True,
+                        no_heartbeat=True,
+                    ),
+                    load_session_state=False,
+                )
+
+            self.assertFalse(context.supports_image_input)
+            registry = context.tool_registry_factory("default", False)
+            assert registry is not None
+            self.assertNotIn("view_image", registry.names())

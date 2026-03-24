@@ -75,7 +75,11 @@ class AppRuntime:
         self.context = self._context_builder(self.runtime_options)
         self.bus = MessageBus()
         self.channels_config = load_channels_config(self.channel_config_path)
-        self.channel_manager = ChannelManager(self.channels_config, self.bus)
+        self.channel_manager = ChannelManager(
+            self.channels_config,
+            self.bus,
+            attachment_store=self.context.attachment_store,
+        )
         self.delivery_store = DeliveryStore(
             self.context.workspace / ".echobot" / "delivery.json",
         )
@@ -155,7 +159,11 @@ class AppRuntime:
             raise RuntimeError("App runtime has not been started")
 
         next_config = config or load_channels_config(self.channel_config_path)
-        next_manager = ChannelManager(next_config, self.bus)
+        next_manager = ChannelManager(
+            next_config,
+            self.bus,
+            attachment_store=self.context.attachment_store,
+        )
         await next_manager.start_all()
 
         previous_manager = self.channel_manager

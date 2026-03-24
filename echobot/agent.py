@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from .models import (
+    FileInput,
+    ImageInput,
     LLMMessage,
     LLMResponse,
     LLMTool,
@@ -23,6 +25,11 @@ class AgentRunResult:
     history: list[LLMMessage]
     steps: int
     compressed_summary: str = ""
+    outbound_content_blocks: list[dict[str, Any]] | None = None
+
+    def __post_init__(self) -> None:
+        if self.outbound_content_blocks is None:
+            self.outbound_content_blocks = []
 
 
 TraceCallback = Callable[[str, dict[str, Any]], Awaitable[None]]
@@ -44,7 +51,8 @@ class AgentCore:
         self,
         user_input: str,
         *,
-        image_urls: Sequence[str] | None = None,
+        image_urls: Sequence[ImageInput] | None = None,
+        file_attachments: Sequence[FileInput] | None = None,
         history: Sequence[LLMMessage] | None = None,
         tools: Sequence[LLMTool] | None = None,
         extra_system_messages: Sequence[str] | None = None,
@@ -55,6 +63,7 @@ class AgentCore:
         persistent_messages = self._build_persistent_messages(
             user_input,
             image_urls=image_urls,
+            file_attachments=file_attachments,
             history=history,
         )
         messages = self._build_request_messages(
@@ -74,7 +83,8 @@ class AgentCore:
         self,
         user_input: str,
         *,
-        image_urls: Sequence[str] | None = None,
+        image_urls: Sequence[ImageInput] | None = None,
+        file_attachments: Sequence[FileInput] | None = None,
         history: Sequence[LLMMessage] | None = None,
         tools: Sequence[LLMTool] | None = None,
         extra_system_messages: Sequence[str] | None = None,
@@ -85,6 +95,7 @@ class AgentCore:
         persistent_messages = self._build_persistent_messages(
             user_input,
             image_urls=image_urls,
+            file_attachments=file_attachments,
             history=history,
         )
         messages = self._build_request_messages(
@@ -105,7 +116,8 @@ class AgentCore:
         self,
         user_input: str,
         *,
-        image_urls: Sequence[str] | None = None,
+        image_urls: Sequence[ImageInput] | None = None,
+        file_attachments: Sequence[FileInput] | None = None,
         history: Sequence[LLMMessage] | None = None,
         compressed_summary: str = "",
         extra_system_messages: Sequence[str] | None = None,
@@ -117,6 +129,7 @@ class AgentCore:
         persistent_messages = self._build_persistent_messages(
             user_input,
             image_urls=image_urls,
+            file_attachments=file_attachments,
             history=history,
         )
         request_messages, persistent_messages, compressed_summary = (
@@ -142,7 +155,11 @@ class AgentCore:
         new_messages = [
             LLMMessage(
                 role="user",
-                content=build_user_message_content(user_input, image_urls),
+                content=build_user_message_content(
+                    user_input,
+                    image_urls,
+                    file_attachments,
+                ),
             ),
             response.message,
         ]
@@ -160,7 +177,8 @@ class AgentCore:
         user_input: str,
         *,
         tool_registry: ToolRegistry,
-        image_urls: Sequence[str] | None = None,
+        image_urls: Sequence[ImageInput] | None = None,
+        file_attachments: Sequence[FileInput] | None = None,
         history: Sequence[LLMMessage] | None = None,
         compressed_summary: str = "",
         tool_choice: str | dict[str, Any] | None = None,
@@ -174,15 +192,21 @@ class AgentCore:
         persistent_messages = self._build_persistent_messages(
             user_input,
             image_urls=image_urls,
+            file_attachments=file_attachments,
             history=history,
         )
         new_messages = [
             LLMMessage(
                 role="user",
-                content=build_user_message_content(user_input, image_urls),
+                content=build_user_message_content(
+                    user_input,
+                    image_urls,
+                    file_attachments,
+                ),
             )
         ]
         llm_tools = tool_registry.to_llm_tools()
+        outbound_content_blocks: list[dict[str, Any]] = []
 
         for step in range(1, max_steps + 1):
             request_messages, persistent_messages, compressed_summary = (
@@ -217,9 +241,12 @@ class AgentCore:
                     history=persistent_messages,
                     steps=step,
                     compressed_summary=compressed_summary,
+                    outbound_content_blocks=outbound_content_blocks,
                 )
 
             tool_results = await tool_registry.execute_tool_calls(response.tool_calls)
+            promoted_image_urls: list[dict[str, str]] = []
+            promoted_tool_names: list[str] = []
             for result in tool_results:
                 tool_message = result.to_message()
                 persistent_messages.append(tool_message)
@@ -233,6 +260,27 @@ class AgentCore:
                     is_error=result.is_error,
                     message=_message_to_trace_dict(tool_message),
                 )
+                if result.promoted_image_urls and not result.is_error:
+                    promoted_image_urls.extend(result.promoted_image_urls)
+                    promoted_tool_names.append(result.tool_name)
+                if result.outbound_content_blocks and not result.is_error:
+                    outbound_content_blocks.extend(result.outbound_content_blocks)
+
+            promoted_message = _build_promoted_tool_image_message(
+                promoted_image_urls,
+                tool_names=promoted_tool_names,
+            )
+            if promoted_message is not None:
+                persistent_messages.append(promoted_message)
+                new_messages.append(promoted_message)
+                await _emit_trace(
+                    trace_callback,
+                    "tool_result_promotion",
+                    step=step,
+                    tool_names=list(dict.fromkeys(promoted_tool_names)),
+                    image_count=len(promoted_image_urls),
+                    message=_message_to_trace_dict(promoted_message),
+                )
 
         raise RuntimeError(f"Tool loop exceeded max_steps={max_steps}")
 
@@ -242,7 +290,8 @@ class AgentCore:
         *,
         skill_registry: SkillRegistry,
         tool_registry: ToolRegistry | None = None,
-        image_urls: Sequence[str] | None = None,
+        image_urls: Sequence[ImageInput] | None = None,
+        file_attachments: Sequence[FileInput] | None = None,
         history: Sequence[LLMMessage] | None = None,
         compressed_summary: str = "",
         tool_choice: str | dict[str, Any] | None = None,
@@ -285,6 +334,7 @@ class AgentCore:
                 user_input,
                 tool_registry=combined_registry,
                 image_urls=image_urls,
+                file_attachments=file_attachments,
                 history=history,
                 compressed_summary=compressed_summary,
                 tool_choice=tool_choice,
@@ -301,11 +351,13 @@ class AgentCore:
                 history=persisted_skill_messages + result.history,
                 steps=result.steps,
                 compressed_summary=result.compressed_summary,
+                outbound_content_blocks=result.outbound_content_blocks,
             )
 
         result = await self.ask_with_memory(
             user_input,
             image_urls=image_urls,
+            file_attachments=file_attachments,
             history=history,
             compressed_summary=compressed_summary,
             extra_system_messages=combined_system_messages,
@@ -327,14 +379,19 @@ class AgentCore:
         self,
         user_input: str,
         *,
-        image_urls: Sequence[str] | None = None,
+        image_urls: Sequence[ImageInput] | None = None,
+        file_attachments: Sequence[FileInput] | None = None,
         history: Sequence[LLMMessage] | None = None,
     ) -> list[LLMMessage]:
         persistent_messages = list(history or [])
         persistent_messages.append(
             LLMMessage(
                 role="user",
-                content=build_user_message_content(user_input, image_urls),
+                content=build_user_message_content(
+                    user_input,
+                    image_urls,
+                    file_attachments,
+                ),
             )
         )
         return persistent_messages
@@ -444,6 +501,38 @@ def _message_to_trace_dict(message: LLMMessage) -> dict[str, Any]:
             for tool_call in message.tool_calls
         ],
     }
+
+
+def _build_promoted_tool_image_message(
+    image_urls: Sequence[ImageInput],
+    *,
+    tool_names: Sequence[str],
+) -> LLMMessage | None:
+    if not image_urls:
+        return None
+
+    unique_tool_names = [name for name in dict.fromkeys(tool_names) if name]
+    if len(unique_tool_names) == 1:
+        prompt_text = (
+            f"The previous tool '{unique_tool_names[0]}' produced image input. "
+            "Use the attached image while continuing this request."
+        )
+    elif unique_tool_names:
+        joined_names = ", ".join(unique_tool_names)
+        prompt_text = (
+            f"The previous tools ({joined_names}) produced image input. "
+            "Use the attached images while continuing this request."
+        )
+    else:
+        prompt_text = (
+            "The previous tool output included image input. "
+            "Use the attached images while continuing this request."
+        )
+
+    return LLMMessage(
+        role="user",
+        content=build_user_message_content(prompt_text, image_urls=image_urls),
+    )
 
 
 def _split_messages_for_transient_context(

@@ -26,7 +26,8 @@ from echobot.providers.openai_compatible import (
 from echobot.runtime.session_runner import SessionAgentRunner
 from echobot.runtime.sessions import SessionStore
 from echobot.runtime.turns import run_agent_turn
-from echobot.tools import BaseTool, ToolRegistry
+from echobot.skill_support import SkillRegistry
+from echobot.tools import BaseTool, ToolExecutionOutput, ToolRegistry
 
 
 class FakeProvider(LLMProvider):
@@ -94,6 +95,58 @@ class EchoTool(BaseTool):
         return {"echo": arguments["text"]}
 
 
+class ImageEchoTool(BaseTool):
+    name = "image_echo_tool"
+    description = "Return an image for the next model call."
+    parameters = {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": False,
+    }
+
+    async def run(self, arguments: dict[str, str]) -> ToolExecutionOutput:
+        del arguments
+        return ToolExecutionOutput(
+            data={"status": "loaded"},
+            promoted_image_urls=[
+                {
+                    "attachment_id": "img_demo",
+                    "url": "attachment://img_demo",
+                    "preview_url": "/api/attachments/img_demo/content",
+                }
+            ],
+        )
+
+
+class UserFileTool(BaseTool):
+    name = "user_file_tool"
+    description = "Return a file that should be sent to the user."
+    parameters = {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": False,
+    }
+
+    async def run(self, arguments: dict[str, str]) -> ToolExecutionOutput:
+        del arguments
+        return ToolExecutionOutput(
+            data={"status": "queued"},
+            outbound_content_blocks=[
+                {
+                    "type": "file_attachment",
+                    "file_attachment": {
+                        "attachment_id": "file_demo",
+                        "name": "report.txt",
+                        "download_url": "/api/attachments/file_demo/content",
+                        "workspace_path": "report.txt",
+                        "content_type": "text/plain",
+                        "size_bytes": 5,
+                    },
+                }
+            ],
+        )
+
+
 class FakeToolProvider(LLMProvider):
     def __init__(self) -> None:
         self.calls = 0
@@ -137,6 +190,90 @@ class FakeToolProvider(LLMProvider):
         )
 
 
+class FakeImageToolProvider(LLMProvider):
+    def __init__(self) -> None:
+        self.calls = 0
+        self.seen_messages: list[list[LLMMessage]] = []
+
+    async def generate(
+        self,
+        messages,
+        *,
+        tools=None,
+        tool_choice=None,
+        temperature=None,
+        max_tokens=None,
+    ) -> LLMResponse:
+        del tools, tool_choice, temperature, max_tokens
+        self.calls += 1
+        self.seen_messages.append(list(messages))
+        if self.calls == 1:
+            tool_calls = [
+                ToolCall(
+                    id="call_image",
+                    name="image_echo_tool",
+                    arguments="{}",
+                )
+            ]
+            return LLMResponse(
+                message=LLMMessage(
+                    role="assistant",
+                    content="",
+                    tool_calls=tool_calls,
+                ),
+                model="fake-model",
+                finish_reason="tool_calls",
+                tool_calls=tool_calls,
+            )
+
+        return LLMResponse(
+            message=LLMMessage(role="assistant", content="done"),
+            model="fake-model",
+            finish_reason="stop",
+        )
+
+
+class FakeUserFileToolProvider(LLMProvider):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def generate(
+        self,
+        messages,
+        *,
+        tools=None,
+        tool_choice=None,
+        temperature=None,
+        max_tokens=None,
+    ) -> LLMResponse:
+        del messages, tools, tool_choice, temperature, max_tokens
+        self.calls += 1
+        if self.calls == 1:
+            tool_calls = [
+                ToolCall(
+                    id="call_file",
+                    name="user_file_tool",
+                    arguments="{}",
+                )
+            ]
+            return LLMResponse(
+                message=LLMMessage(
+                    role="assistant",
+                    content="",
+                    tool_calls=tool_calls,
+                ),
+                model="fake-model",
+                finish_reason="tool_calls",
+                tool_calls=tool_calls,
+            )
+
+        return LLMResponse(
+            message=LLMMessage(role="assistant", content="done"),
+            model="fake-model",
+            finish_reason="stop",
+        )
+
+
 class MaxStepsRecordingAgent(AgentCore):
     def __init__(self) -> None:
         super().__init__(FakeProvider())
@@ -148,6 +285,7 @@ class MaxStepsRecordingAgent(AgentCore):
         *,
         tool_registry: ToolRegistry,
         image_urls=None,
+        file_attachments=None,
         history=None,
         compressed_summary: str = "",
         tool_choice=None,
@@ -161,6 +299,7 @@ class MaxStepsRecordingAgent(AgentCore):
         del (
             tool_registry,
             image_urls,
+            file_attachments,
             history,
             tool_choice,
             extra_system_messages,
@@ -204,7 +343,13 @@ class AgentCoreTests(unittest.IsolatedAsyncioTestCase):
 
         await agent.ask(
             "describe this",
-            image_urls=["data:image/png;base64,AAAA"],
+            image_urls=[
+                {
+                    "attachment_id": "img_demo",
+                    "url": "attachment://img_demo",
+                    "preview_url": "/api/attachments/img_demo/content",
+                }
+            ],
         )
 
         user_message = provider.last_messages[-1]
@@ -214,8 +359,12 @@ class AgentCoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("describe this", user_message.content[0]["text"])
         self.assertEqual("image_url", user_message.content[1]["type"])
         self.assertEqual(
-            "data:image/png;base64,AAAA",
+            "attachment://img_demo",
             user_message.content[1]["image_url"]["url"],
+        )
+        self.assertEqual(
+            "/api/attachments/img_demo/content",
+            user_message.content[1]["image_url"]["preview_url"],
         )
 
     async def test_ask_with_memory_uses_compacted_history_and_summary(self) -> None:
@@ -308,6 +457,69 @@ class AgentCoreTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual("handoff", second_call[0].content)
 
+    async def test_ask_with_tools_promotes_tool_images_into_next_user_message(self) -> None:
+        provider = FakeImageToolProvider()
+        agent = AgentCore(provider)
+        registry = ToolRegistry([ImageEchoTool()])
+
+        result = await agent.ask_with_tools("inspect this", tool_registry=registry)
+
+        self.assertEqual("done", result.response.message.content)
+        self.assertEqual(2, provider.calls)
+        second_call = provider.seen_messages[1]
+        self.assertEqual(
+            ["user", "assistant", "tool", "user"],
+            [message.role for message in second_call],
+        )
+        promoted_user_message = second_call[-1]
+        self.assertIsInstance(promoted_user_message.content, list)
+        self.assertEqual("text", promoted_user_message.content[0]["type"])
+        self.assertIn("image_echo_tool", promoted_user_message.content[0]["text"])
+        self.assertEqual("image_url", promoted_user_message.content[1]["type"])
+        self.assertEqual(
+            "attachment://img_demo",
+            promoted_user_message.content[1]["image_url"]["url"],
+        )
+        self.assertEqual(
+            "/api/attachments/img_demo/content",
+            promoted_user_message.content[1]["image_url"]["preview_url"],
+        )
+
+    async def test_ask_with_tools_collects_outbound_content_blocks(self) -> None:
+        provider = FakeUserFileToolProvider()
+        agent = AgentCore(provider)
+        registry = ToolRegistry([UserFileTool()])
+
+        result = await agent.ask_with_tools("send the file", tool_registry=registry)
+
+        self.assertEqual("done", result.response.message.content)
+        self.assertEqual(1, len(result.outbound_content_blocks))
+        self.assertEqual("file_attachment", result.outbound_content_blocks[0]["type"])
+        self.assertEqual(
+            "report.txt",
+            result.outbound_content_blocks[0]["file_attachment"]["name"],
+        )
+
+    async def test_ask_with_skills_preserves_outbound_content_blocks_from_tools(self) -> None:
+        provider = FakeUserFileToolProvider()
+        agent = AgentCore(provider)
+        skill_registry = SkillRegistry()
+        tool_registry = ToolRegistry([UserFileTool()])
+
+        result = await agent.ask_with_skills(
+            "send the file",
+            skill_registry=skill_registry,
+            tool_registry=tool_registry,
+        )
+
+        self.assertEqual("done", result.response.message.content)
+        self.assertEqual(1, len(result.outbound_content_blocks))
+        self.assertEqual("file_attachment", result.outbound_content_blocks[0]["type"])
+        self.assertEqual(
+            "report.txt",
+            result.outbound_content_blocks[0]["file_attachment"]["name"],
+        )
+
 
 class RunAgentTurnTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_agent_turn_uses_default_max_steps_of_50(self) -> None:
@@ -394,6 +606,20 @@ class SystemPromptTests(unittest.TestCase):
 
             self.assertIn(str(memory_workspace), prompt)
             self.assertIn(str(memory_workspace / "MEMORY.md"), prompt)
+
+    def test_build_default_system_prompt_omits_view_image_when_vision_is_disabled(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+
+            prompt = build_default_system_prompt(
+                workspace,
+                supports_image_input=False,
+            )
+
+            self.assertNotIn("`view_image`", prompt)
+            self.assertIn("`send_image_to_user`", prompt)
 
 
 class ReMeLightSettingsTests(unittest.TestCase):

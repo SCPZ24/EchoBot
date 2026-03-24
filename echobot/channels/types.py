@@ -5,6 +5,14 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..models import (
+    FileInput,
+    ImageInput,
+    MessageContent,
+    message_content_to_text,
+    normalize_message_content,
+)
+
 
 def _slug(value: str) -> str:
     cleaned = value.strip().lower()
@@ -65,7 +73,8 @@ class InboundMessage:
     address: ChannelAddress
     sender_id: str
     text: str
-    image_urls: list[str] = field(default_factory=list)
+    image_urls: list[ImageInput] = field(default_factory=list)
+    files: list[FileInput] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -80,8 +89,18 @@ class InboundMessage:
 @dataclass(slots=True)
 class OutboundMessage:
     address: ChannelAddress
-    text: str
+    text: str = ""
+    content: MessageContent | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.content is None:
+            self.content = normalize_message_content(self.text)
+        else:
+            self.content = normalize_message_content(self.content)
+
+        if not self.text:
+            self.text = message_content_to_text(self.content)
 
 
 @dataclass(slots=True)

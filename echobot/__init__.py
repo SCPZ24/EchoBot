@@ -1,3 +1,4 @@
+from .attachments import AttachmentStore
 from .agent import AgentCore, AgentRunResult
 from .config import load_env_file
 from .models import LLMMessage, LLMResponse, LLMTool, LLMUsage, ToolCall
@@ -26,8 +27,12 @@ from .tools import (
     ListDirectoryTool,
     MemorySearchTool,
     ReadTextFileTool,
+    SendFileToUserTool,
+    SendImageToUserTool,
+    ToolExecutionOutput,
     ToolRegistry,
     ToolResult,
+    ViewImageTool,
     WebRequestTool,
     WriteTextFileTool,
     create_basic_tool_registry,
@@ -38,6 +43,7 @@ __all__ = [
     "AgentTraceStore",
     "AgentCore",
     "AgentRunResult",
+    "AttachmentStore",
     "BaseTool",
     "CommandExecutionTool",
     "CronJob",
@@ -63,6 +69,8 @@ __all__ = [
     "ReadTextFileTool",
     "ReMeLightSettings",
     "ReMeLightSupport",
+    "SendFileToUserTool",
+    "SendImageToUserTool",
     "SessionAgentRunner",
     "SessionLifecycleService",
     "Skill",
@@ -70,9 +78,11 @@ __all__ = [
     "SessionInfo",
     "SessionService",
     "SessionStore",
+    "ToolExecutionOutput",
     "ToolRegistry",
     "ToolResult",
     "ToolCall",
+    "ViewImageTool",
     "WebRequestTool",
     "WriteTextFileTool",
     "create_basic_tool_registry",

@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from ..models import LLMMessage
+from ..models import LLMMessage, normalize_message_content
 from ..orchestration import (
     DEFAULT_ROUTE_MODE,
     RouteMode,
@@ -12,6 +12,10 @@ from ..orchestration import (
     route_mode_from_metadata,
 )
 from ..runtime.sessions import ChatSession, SessionInfo
+
+
+MAX_CHAT_IMAGES = 20
+MAX_CHAT_FILES = 20
 
 
 class ToolCallModel(BaseModel):
@@ -70,16 +74,49 @@ class ChatRequest(BaseModel):
     route_mode: RouteMode | None = None
     temperature: float | None = None
     max_tokens: int | None = None
-    images: list["ChatImageInput"] = Field(default_factory=list)
+    images: list["ChatImageInput"] = Field(
+        default_factory=list,
+        max_length=MAX_CHAT_IMAGES,
+    )
+    files: list["ChatFileInput"] = Field(
+        default_factory=list,
+        max_length=MAX_CHAT_FILES,
+    )
 
 
 class ChatImageInput(BaseModel):
-    data_url: str
+    attachment_id: str
+
+
+class ChatFileInput(BaseModel):
+    attachment_id: str
+
+
+class ImageAttachmentResponse(BaseModel):
+    attachment_id: str
+    url: str
+    preview_url: str
+    content_type: str
+    size_bytes: int
+    width: int
+    height: int
+    original_filename: str = ""
+
+
+class FileAttachmentResponse(BaseModel):
+    attachment_id: str
+    url: str
+    download_url: str
+    content_type: str
+    size_bytes: int
+    original_filename: str = ""
+    workspace_path: str
 
 
 class ChatResponse(BaseModel):
     session_name: str
     response: str
+    response_content: str | list[dict[str, Any]] = ""
     updated_at: str
     steps: int
     compressed_summary: str = ""
@@ -95,6 +132,7 @@ class ChatJobResponse(BaseModel):
     session_name: str
     status: str
     response: str = ""
+    response_content: str | list[dict[str, Any]] = ""
     error: str = ""
     steps: int = 0
     created_at: str
@@ -262,10 +300,17 @@ class ASRTranscriptionResponse(BaseModel):
     language: str = ""
 
 
-def message_model_from_message(message: LLMMessage) -> MessageModel:
+def message_model_from_message(
+    message: LLMMessage,
+    *,
+    sanitize_user_content: bool = False,
+) -> MessageModel:
+    del sanitize_user_content
+    content = normalize_message_content(message.content)
+
     return MessageModel(
         role=message.role,
-        content=message.content,
+        content=content,
         name=message.name,
         tool_call_id=message.tool_call_id,
         tool_calls=[
@@ -294,7 +339,13 @@ def session_detail_model_from_session(session: ChatSession) -> SessionDetailMode
         compressed_summary=session.compressed_summary,
         role_name=role_name_from_metadata(session.metadata),
         route_mode=route_mode_from_metadata(session.metadata),
-        history=[message_model_from_message(message) for message in session.history],
+        history=[
+            message_model_from_message(
+                message,
+                sanitize_user_content=True,
+            )
+            for message in session.history
+        ],
     )
 
 

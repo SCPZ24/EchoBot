@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from ..agent import AgentCore, AgentRunResult, TraceCallback
-from ..models import LLMMessage
+from ..models import FileInput, ImageInput, LLMMessage
 from ..skill_support import SkillRegistry
 from ..tools import ToolRegistry
 
@@ -13,7 +13,8 @@ async def run_agent_turn(
     prompt: str,
     history: list[LLMMessage],
     *,
-    image_urls: Sequence[str] | None = None,
+    image_urls: Sequence[ImageInput] | None = None,
+    file_attachments: Sequence[FileInput] | None = None,
     compressed_summary: str,
     skill_registry: SkillRegistry | None,
     tool_registry: ToolRegistry | None,
@@ -28,6 +29,7 @@ async def run_agent_turn(
         return await agent.ask_with_skills(
             prompt,
             image_urls=image_urls,
+            file_attachments=file_attachments,
             history=history,
             compressed_summary=compressed_summary,
             skill_registry=skill_registry,
@@ -44,6 +46,7 @@ async def run_agent_turn(
         return await agent.ask_with_tools(
             prompt,
             image_urls=image_urls,
+            file_attachments=file_attachments,
             history=history,
             compressed_summary=compressed_summary,
             tool_registry=tool_registry,
@@ -58,6 +61,7 @@ async def run_agent_turn(
     return await agent.ask_with_memory(
         prompt,
         image_urls=image_urls,
+        file_attachments=file_attachments,
         history=history,
         compressed_summary=compressed_summary,
         extra_system_messages=extra_system_messages,

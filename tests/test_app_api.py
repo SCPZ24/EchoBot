@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import os
 import tempfile
@@ -9,6 +8,7 @@ import time
 import unittest
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import quote
 from unittest.mock import patch
 
@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from echobot import AgentCore, AgentTraceStore, LLMMessage, LLMResponse
+from echobot.attachments import AttachmentStore
 from echobot.asr import ASRStatusSnapshot, TranscriptionResult
 from echobot.app import create_app
 from echobot.channels import ChannelAddress
@@ -45,12 +46,15 @@ from echobot.tts import SynthesizedSpeech, TTSProvider, TTSService, VoiceOption
 os.environ.setdefault("ECHOBOT_ASR_AUTO_DOWNLOAD", "false")
 
 
-def make_chat_png_data_url() -> str:
+def make_chat_png_bytes() -> bytes:
     image = Image.new("RGBA", (2, 2), (255, 0, 0, 128))
     output = BytesIO()
     image.save(output, format="PNG")
-    encoded_bytes = base64.b64encode(output.getvalue()).decode("ascii")
-    return f"data:image/png;base64,{encoded_bytes}"
+    return output.getvalue()
+
+
+def make_chat_text_bytes() -> bytes:
+    return "hello from uploaded file\n".encode("utf-8")
 
 
 class FakeProvider(LLMProvider):
@@ -316,6 +320,8 @@ def build_test_context(options: RuntimeOptions) -> RuntimeContext:
         )
     return RuntimeContext(
         workspace=workspace,
+        attachment_store=AttachmentStore(workspace / ".echobot" / "attachments"),
+        supports_image_input=True,
         agent=agent,
         session_store=session_store,
         agent_session_store=agent_session_store,
@@ -363,6 +369,8 @@ def build_slow_agent_test_context(options: RuntimeOptions) -> RuntimeContext:
         )
     return RuntimeContext(
         workspace=workspace,
+        attachment_store=AttachmentStore(workspace / ".echobot" / "attachments"),
+        supports_image_input=True,
         agent=agent,
         session_store=session_store,
         agent_session_store=agent_session_store,
@@ -410,6 +418,8 @@ def build_slow_ack_test_context(options: RuntimeOptions) -> RuntimeContext:
         )
     return RuntimeContext(
         workspace=workspace,
+        attachment_store=AttachmentStore(workspace / ".echobot" / "attachments"),
+        supports_image_input=True,
         agent=agent,
         session_store=session_store,
         agent_session_store=agent_session_store,
@@ -643,6 +653,7 @@ class AppApiTests(unittest.TestCase):
             self.assertEqual(200, replied.status_code)
             self.assertEqual("demo", replied.json()["session_name"])
             self.assertEqual("pong", replied.json()["response"])
+            self.assertEqual("pong", replied.json()["response_content"])
             self.assertFalse(replied.json()["delegated"])
             self.assertTrue(replied.json()["completed"])
             self.assertEqual("default", replied.json()["role_name"])
@@ -671,6 +682,16 @@ class AppApiTests(unittest.TestCase):
             )
 
             with TestClient(app) as client:
+                uploaded = client.post(
+                    "/api/attachments/images",
+                    files={
+                        "file": (
+                            "cat.png",
+                            make_chat_png_bytes(),
+                            "image/png",
+                        )
+                    },
+                )
                 replied = client.post(
                     "/api/chat",
                     json={
@@ -678,22 +699,314 @@ class AppApiTests(unittest.TestCase):
                         "prompt": "",
                         "images": [
                             {
-                                "data_url": make_chat_png_data_url(),
+                                "attachment_id": uploaded.json()["attachment_id"],
                             }
                         ],
                     },
                 )
                 detail = client.get("/api/sessions/vision")
 
+            self.assertEqual(200, uploaded.status_code)
             self.assertEqual(200, replied.status_code)
             self.assertEqual("pong", replied.json()["response"])
             self.assertEqual(200, detail.status_code)
             self.assertIsInstance(detail.json()["history"][0]["content"], list)
             self.assertTrue(
-                detail.json()["history"][0]["content"][0]["image_url"]["url"].startswith(
-                    "data:image/jpeg;base64,",
+                detail.json()["history"][0]["content"][0]["image_url"]["url"].startswith("attachment://")
+            )
+            self.assertTrue(
+                detail.json()["history"][0]["content"][0]["image_url"]["preview_url"].startswith(
+                    "/api/attachments/",
                 )
             )
+
+    def test_chat_endpoint_ignores_images_when_vision_is_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            app = create_app(
+                runtime_options=RuntimeOptions(
+                    workspace=workspace,
+                    no_tools=True,
+                    no_skills=True,
+                    no_memory=True,
+                    no_heartbeat=True,
+                ),
+                channel_config_path=workspace / ".echobot" / "channels.json",
+                context_builder=build_test_context,
+            )
+
+            with TestClient(app) as client:
+                runtime = client.app.state.runtime
+                runtime.context.supports_image_input = False
+                uploaded = client.post(
+                    "/api/attachments/images",
+                    files={
+                        "file": (
+                            "cat.png",
+                            make_chat_png_bytes(),
+                            "image/png",
+                        )
+                    },
+                )
+                replied = client.post(
+                    "/api/chat",
+                    json={
+                        "session_name": "vision-off",
+                        "prompt": "",
+                        "images": [
+                            {
+                                "attachment_id": uploaded.json()["attachment_id"],
+                            }
+                        ],
+                    },
+                )
+                detail = client.get("/api/sessions/vision-off")
+
+            self.assertEqual(200, uploaded.status_code)
+            self.assertEqual(200, replied.status_code)
+            self.assertEqual("pong", replied.json()["response"])
+            self.assertEqual(200, detail.status_code)
+            self.assertEqual("", detail.json()["history"][0]["content"])
+
+    def test_chat_endpoint_returns_structured_response_content(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            app = create_app(
+                runtime_options=RuntimeOptions(
+                    workspace=workspace,
+                    no_tools=True,
+                    no_skills=True,
+                    no_memory=True,
+                    no_heartbeat=True,
+                ),
+                channel_config_path=workspace / ".echobot" / "channels.json",
+                context_builder=build_test_context,
+            )
+
+            with TestClient(app) as client:
+                runtime = client.app.state.runtime
+                session = runtime.context.session_store.load_or_create_session("demo")
+
+                async def fake_run_prompt(*args, **kwargs):
+                    del args, kwargs
+                    return SimpleNamespace(
+                        session=session,
+                        response_text="Attached the report.",
+                        response_content=[
+                            {
+                                "type": "text",
+                                "text": "Attached the report.",
+                            },
+                            {
+                                "type": "file_attachment",
+                                "file_attachment": {
+                                    "attachment_id": "file_demo",
+                                    "name": "report.txt",
+                                    "download_url": "/api/attachments/file_demo/content",
+                                    "workspace_path": "report.txt",
+                                    "content_type": "text/plain",
+                                    "size_bytes": 5,
+                                },
+                            },
+                        ],
+                        delegated=False,
+                        completed=True,
+                        job_id=None,
+                        status="completed",
+                        role_name="default",
+                        steps=1,
+                        compressed_summary="",
+                    )
+
+                runtime.chat_service.run_prompt = fake_run_prompt
+                replied = client.post(
+                    "/api/chat",
+                    json={
+                        "session_name": "demo",
+                        "prompt": "send the report",
+                    },
+                )
+
+            self.assertEqual(200, replied.status_code)
+            payload = replied.json()
+            self.assertEqual("Attached the report.", payload["response"])
+            self.assertIsInstance(payload["response_content"], list)
+            self.assertEqual("text", payload["response_content"][0]["type"])
+            self.assertEqual("file_attachment", payload["response_content"][1]["type"])
+
+    def test_chat_endpoint_accepts_file_only_requests(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            app = create_app(
+                runtime_options=RuntimeOptions(
+                    workspace=workspace,
+                    no_tools=True,
+                    no_skills=True,
+                    no_memory=True,
+                    no_heartbeat=True,
+                ),
+                channel_config_path=workspace / ".echobot" / "channels.json",
+                context_builder=build_test_context,
+            )
+
+            with TestClient(app) as client:
+                uploaded = client.post(
+                    "/api/attachments/files",
+                    files={
+                        "file": (
+                            "notes.txt",
+                            make_chat_text_bytes(),
+                            "text/plain",
+                        )
+                    },
+                )
+                upload_payload = uploaded.json()
+                downloaded = client.get(upload_payload["download_url"])
+                replied = client.post(
+                    "/api/chat",
+                    json={
+                        "session_name": "files",
+                        "prompt": "帮我看看这个文件是做什么的",
+                        "files": [
+                            {
+                                "attachment_id": upload_payload["attachment_id"],
+                            }
+                        ],
+                    },
+                )
+                detail = client.get("/api/sessions/files")
+
+            self.assertEqual(200, uploaded.status_code)
+            self.assertTrue(upload_payload["attachment_id"].startswith("file_"))
+            self.assertEqual("text/plain", upload_payload["content_type"])
+            self.assertTrue(upload_payload["download_url"].startswith("/api/attachments/"))
+            self.assertTrue(upload_payload["workspace_path"].startswith(".echobot/attachments/files/file_"))
+            self.assertTrue(upload_payload["workspace_path"].endswith(".txt"))
+
+            self.assertEqual(200, downloaded.status_code)
+            self.assertTrue(downloaded.headers["content-type"].startswith("text/plain"))
+            self.assertEqual(make_chat_text_bytes(), downloaded.content)
+
+            self.assertEqual(200, replied.status_code)
+            self.assertEqual("pong", replied.json()["response"])
+            self.assertEqual(200, detail.status_code)
+            user_content = detail.json()["history"][0]["content"]
+            self.assertIsInstance(user_content, list)
+            self.assertEqual("text", user_content[0]["type"])
+            self.assertEqual("帮我看看这个文件是做什么的", user_content[0]["text"])
+            self.assertEqual("file_attachment", user_content[1]["type"])
+            self.assertEqual("notes.txt", user_content[1]["file_attachment"]["name"])
+            self.assertEqual(
+                upload_payload["attachment_id"],
+                user_content[1]["file_attachment"]["attachment_id"],
+            )
+            self.assertEqual(
+                upload_payload["download_url"],
+                user_content[1]["file_attachment"]["download_url"],
+            )
+            self.assertEqual(
+                upload_payload["size_bytes"],
+                user_content[1]["file_attachment"]["size_bytes"],
+            )
+
+    def test_chat_endpoint_rejects_wrong_attachment_type(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            app = create_app(
+                runtime_options=RuntimeOptions(
+                    workspace=workspace,
+                    no_tools=True,
+                    no_skills=True,
+                    no_memory=True,
+                    no_heartbeat=True,
+                ),
+                channel_config_path=workspace / ".echobot" / "channels.json",
+                context_builder=build_test_context,
+            )
+
+            with TestClient(app) as client:
+                uploaded = client.post(
+                    "/api/attachments/files",
+                    files={
+                        "file": (
+                            "notes.txt",
+                            make_chat_text_bytes(),
+                            "text/plain",
+                        )
+                    },
+                )
+                replied = client.post(
+                    "/api/chat",
+                    json={
+                        "session_name": "wrong-kind",
+                        "prompt": "",
+                        "images": [
+                            {
+                                "attachment_id": uploaded.json()["attachment_id"],
+                            }
+                        ],
+                    },
+                )
+
+            self.assertEqual(200, uploaded.status_code)
+            self.assertEqual(400, replied.status_code)
+            self.assertIn("not an image", replied.json()["detail"])
+
+    def test_chat_endpoint_keeps_chat_only_route_for_file_requests(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            app = create_app(
+                runtime_options=RuntimeOptions(
+                    workspace=workspace,
+                    no_tools=True,
+                    no_skills=True,
+                    no_memory=True,
+                    no_heartbeat=True,
+                ),
+                channel_config_path=workspace / ".echobot" / "channels.json",
+                context_builder=build_test_context,
+            )
+
+            with TestClient(app) as client:
+                runtime = client.app.state.runtime
+                runtime.context.tool_registry_factory = (
+                    lambda *_args: SimpleNamespace(names=lambda: ["read_text_file"])
+                )
+                switched = client.put(
+                    "/api/sessions/default/route-mode",
+                    json={"route_mode": "chat_only"},
+                )
+                uploaded = client.post(
+                    "/api/attachments/files",
+                    files={
+                        "file": (
+                            "notes.txt",
+                            make_chat_text_bytes(),
+                            "text/plain",
+                        )
+                    },
+                )
+                replied = client.post(
+                    "/api/chat",
+                    json={
+                        "session_name": "default",
+                        "prompt": "Please set a cron reminder",
+                        "files": [
+                            {
+                                "attachment_id": uploaded.json()["attachment_id"],
+                            }
+                        ],
+                    },
+                )
+                detail = client.get("/api/sessions/default")
+
+            self.assertEqual(200, switched.status_code)
+            self.assertEqual(200, uploaded.status_code)
+            self.assertEqual(200, replied.status_code)
+            self.assertFalse(replied.json()["delegated"])
+            self.assertEqual("pong", replied.json()["response"])
+            self.assertEqual(200, detail.status_code)
+            self.assertEqual("chat_only", detail.json()["route_mode"])
 
     def test_route_mode_endpoint_and_chat_overrides_work(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1112,6 +1425,7 @@ class AppApiTests(unittest.TestCase):
             self.assertEqual(200, final.status_code)
             self.assertEqual("completed", final.json()["status"])
             self.assertEqual("done", final.json()["response"])
+            self.assertEqual("done", final.json()["response_content"])
 
     def test_chat_endpoint_can_disable_agent_ack(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1160,6 +1474,7 @@ class AppApiTests(unittest.TestCase):
             self.assertEqual(200, final.status_code)
             self.assertEqual("completed", final.json()["status"])
             self.assertEqual("done", final.json()["response"])
+            self.assertEqual("done", final.json()["response_content"])
             self.assertEqual(200, detail.status_code)
             history_contents = [item["content"] for item in detail.json()["history"]]
             self.assertNotIn("working", history_contents)
@@ -1304,6 +1619,7 @@ class AppApiTests(unittest.TestCase):
             self.assertEqual("ng", events[1]["delta"])
             self.assertEqual("done", events[-1]["type"])
             self.assertEqual("pong", events[-1]["response"])
+            self.assertEqual("pong", events[-1]["response_content"])
             self.assertFalse(events[-1]["delegated"])
             self.assertTrue(events[-1]["completed"])
 
@@ -1358,6 +1674,7 @@ class AppApiTests(unittest.TestCase):
             self.assertEqual(200, final_job.status_code)
             self.assertEqual("completed", final_job.json()["status"])
             self.assertEqual("done", final_job.json()["response"])
+            self.assertEqual("done", final_job.json()["response_content"])
 
     def test_chat_stream_disconnect_after_ack_still_runs_background_job(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

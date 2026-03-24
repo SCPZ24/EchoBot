@@ -1,5 +1,6 @@
 import { DOM, UI_STATE } from "./state.js";
 import {
+    FILE_ATTACHMENT_CONTENT_BLOCK_TYPE,
     IMAGE_URL_CONTENT_BLOCK_TYPE,
     TEXT_CONTENT_BLOCK_TYPE,
     normalizeMessageContent,
@@ -203,9 +204,15 @@ function renderStructuredBody(element, kind, contentBlocks, options) {
 
         if (blockType === IMAGE_URL_CONTENT_BLOCK_TYPE) {
             const imageUrl = String(block.image_url?.url || "").trim();
+            const previewUrl = String(block.image_url?.preview_url || "").trim();
             if (imageUrl) {
-                fragment.appendChild(buildImageBlock(imageUrl));
+                fragment.appendChild(buildImageBlock(previewUrl || imageUrl));
             }
+            return;
+        }
+
+        if (blockType === FILE_ATTACHMENT_CONTENT_BLOCK_TYPE) {
+            fragment.appendChild(buildFileAttachmentBlock(block.file_attachment));
             return;
         }
 
@@ -257,6 +264,78 @@ function buildImageBlock(imageUrl) {
     previewButton.appendChild(image);
     block.appendChild(previewButton);
     return block;
+}
+
+function buildFileAttachmentBlock(fileAttachment) {
+    const attachment = fileAttachment && typeof fileAttachment === "object"
+        ? fileAttachment
+        : {};
+    const fileName = String(attachment.name || "").trim() || "file";
+    const downloadUrl = String(attachment.download_url || "").trim();
+    const sizeBytes = Number(attachment.size_bytes || 0);
+
+    const block = document.createElement("div");
+    block.className = "message-block message-block-file";
+
+    const card = downloadUrl
+        ? document.createElement("a")
+        : document.createElement("div");
+    card.className = "message-file-card";
+
+    if (downloadUrl) {
+        card.href = downloadUrl;
+        card.target = "_blank";
+        card.rel = "noreferrer";
+        card.download = fileName;
+    }
+
+    const body = document.createElement("div");
+    body.className = "message-file-body";
+
+    const name = document.createElement("div");
+    name.className = "message-file-name";
+    name.textContent = fileName;
+    body.appendChild(name);
+
+    const meta = document.createElement("div");
+    meta.className = "message-file-meta";
+    meta.textContent = buildFileAttachmentMeta(downloadUrl, sizeBytes);
+    if (meta.textContent) {
+        body.appendChild(meta);
+    }
+
+    card.appendChild(body);
+    block.appendChild(card);
+    return block;
+}
+
+function buildFileAttachmentMeta(downloadUrl, sizeBytes) {
+    const parts = [];
+    if (downloadUrl) {
+        parts.push("点击下载");
+    } else {
+        parts.push("已上传");
+    }
+
+    const sizeText = formatFileSize(sizeBytes);
+    if (sizeText) {
+        parts.push(sizeText);
+    }
+    return parts.join(" · ");
+}
+
+function formatFileSize(sizeBytes) {
+    const size = Number(sizeBytes || 0);
+    if (!Number.isFinite(size) || size <= 0) {
+        return "";
+    }
+    if (size < 1024) {
+        return `${size} B`;
+    }
+    if (size < 1024 * 1024) {
+        return `${(size / 1024).toFixed(1).replace(/\\.0$/, "")} KB`;
+    }
+    return `${(size / (1024 * 1024)).toFixed(1).replace(/\\.0$/, "")} MB`;
 }
 
 function handleMessageAreaClick(event) {

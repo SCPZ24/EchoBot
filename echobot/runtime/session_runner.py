@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..agent import AgentCore, AgentRunResult, TraceCallback
-from ..models import LLMMessage, message_content_to_text
+from ..models import FileInput, ImageInput, LLMMessage, message_content_to_text
 from ..skill_support import SkillRegistry
 from ..tools import ToolRegistry
 from .agent_traces import AgentTraceStore
@@ -72,7 +72,8 @@ class SessionAgentRunner:
         session_name: str,
         prompt: str,
         *,
-        image_urls: Sequence[str] | None = None,
+        image_urls: Sequence[ImageInput] | None = None,
+        file_attachments: Sequence[FileInput] | None = None,
         scheduled_context: bool = False,
         extra_system_messages: Sequence[str] | None = None,
         transient_system_messages: Sequence[str] | None = None,
@@ -106,6 +107,7 @@ class SessionAgentRunner:
                     {
                         "prompt": prompt,
                         "image_count": len(image_urls or []),
+                        "file_count": len(file_attachments or []),
                         "scheduled_context": scheduled_context,
                         "history_length": len(session.history),
                         "tool_names": tool_registry.names() if tool_registry is not None else [],
@@ -122,6 +124,7 @@ class SessionAgentRunner:
                     prompt,
                     list(session.history),
                     image_urls=image_urls,
+                    file_attachments=file_attachments,
                     compressed_summary=session.compressed_summary,
                     skill_registry=self._skill_registry,
                     tool_registry=tool_registry,

@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..runtime.bootstrap import RuntimeOptions
-from .routers import chat, channels, cron, health, heartbeat, roles, sessions, web
+from .routers import attachments, chat, channels, cron, health, heartbeat, roles, sessions, web
 from .runtime import ASRServiceBuilder, AppRuntime, RuntimeContextBuilder, TTSServiceBuilder
 
 
@@ -73,6 +73,7 @@ def create_app(
 
     app.include_router(health.router, prefix="/api")
     app.include_router(sessions.router, prefix="/api")
+    app.include_router(attachments.router, prefix="/api")
     app.include_router(chat.router, prefix="/api")
     app.include_router(cron.router, prefix="/api")
     app.include_router(heartbeat.router, prefix="/api")
