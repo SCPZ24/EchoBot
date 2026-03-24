@@ -135,7 +135,10 @@ Live2D 默认开启眼神鼠标跟随的功能，可在面板中关闭。
 
 ### 🖼️ 图像上传
 
-对于支持视觉理解的模型（例如qwen3.5-plus），可以直接发送图片给小助手。(请确保模型支持视觉功能，否则会返回空消息喵)
+对于支持视觉理解的模型（例如`qwen3.5-plus`，`kimi-k2.5`
+），可以直接发送图片给小助手。
+
+> 💡 **提示**：如果模型不支持视觉输入，建议在项目的 `.env` 文件中配置 `ECHOBOT_LLM_SUPPORTS_IMAGE_INPUT=false`，减少小助手的误操作喵~
 
 <p align="center">
   <img src="./assets/webui_image.png" width="100%">

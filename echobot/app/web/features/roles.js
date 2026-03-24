@@ -1,8 +1,10 @@
 import {
     DEFAULT_SESSION_NAME,
-    DOM,
-    UI_STATE,
-} from "./state.js";
+    chatState,
+    roleState,
+    sessionState,
+} from "../core/store.js";
+import { DOM } from "../core/dom.js";
 
 export function createRolesModule(deps) {
     const {
@@ -28,14 +30,14 @@ export function createRolesModule(deps) {
     }
 
     async function syncRolePanelForCurrentSession() {
-        const roleSummaries = Array.isArray(UI_STATE.roles) ? UI_STATE.roles : [];
+        const roleSummaries = Array.isArray(roleState.roles) ? roleState.roles : [];
         const hasCurrentRole = roleSummaries.some(
-            (item) => item && item.name === UI_STATE.currentRoleName,
+            (item) => item && item.name === roleState.currentRoleName,
         );
 
         if (hasCurrentRole) {
             renderRoleSelectOptions();
-        } else if (!UI_STATE.roleLoading) {
+        } else if (!roleState.roleLoading) {
             await refreshRoleList({ silent: true });
         }
         await refreshCurrentRoleCard({ silent: true });
@@ -47,14 +49,14 @@ export function createRolesModule(deps) {
     }
 
     async function refreshRoleList(options = {}) {
-        if (UI_STATE.roleLoading) {
+        if (roleState.roleLoading) {
             return;
         }
 
         setRoleControlsBusy(true, options.silent ? null : "正在加载角色卡…");
         try {
             const payload = await requestJson("/api/roles");
-            UI_STATE.roles = Array.isArray(payload) ? payload : [];
+            roleState.roles = Array.isArray(payload) ? payload : [];
             renderRoleSelectOptions();
             if (!options.silent) {
                 setRoleStatus("");
@@ -72,20 +74,20 @@ export function createRolesModule(deps) {
     }
 
     async function refreshCurrentRoleCard(options = {}) {
-        const roleName = UI_STATE.currentRoleName || "default";
+        const roleName = roleState.currentRoleName || "default";
         if (!roleName) {
-            UI_STATE.currentRoleCard = null;
+            roleState.currentRoleCard = null;
             renderCurrentRoleCard();
             return;
         }
 
         try {
-            UI_STATE.currentRoleCard = await requestJson(
+            roleState.currentRoleCard = await requestJson(
                 `/api/roles/${encodeURIComponent(roleName)}`,
             );
         } catch (error) {
             console.error(error);
-            UI_STATE.currentRoleCard = null;
+            roleState.currentRoleCard = null;
             if (!options.silent) {
                 setRoleStatus(error.message || "角色卡详情加载失败");
                 addMessage("system", `角色卡详情加载失败：${error.message || error}`, "状态");
@@ -101,7 +103,7 @@ export function createRolesModule(deps) {
         }
 
         DOM.roleSelect.innerHTML = "";
-        const roleSummaries = Array.isArray(UI_STATE.roles) ? UI_STATE.roles : [];
+        const roleSummaries = Array.isArray(roleState.roles) ? roleState.roles : [];
         if (roleSummaries.length === 0) {
             const option = document.createElement("option");
             option.value = "default";
@@ -112,8 +114,8 @@ export function createRolesModule(deps) {
         }
 
         const availableNames = new Set(roleSummaries.map((item) => item.name));
-        if (!availableNames.has(UI_STATE.currentRoleName)) {
-            UI_STATE.currentRoleName = availableNames.has("default")
+        if (!availableNames.has(roleState.currentRoleName)) {
+            roleState.currentRoleName = availableNames.has("default")
                 ? "default"
                 : roleSummaries[0].name;
         }
@@ -124,7 +126,7 @@ export function createRolesModule(deps) {
             option.textContent = buildRoleOptionLabel(roleSummary);
             DOM.roleSelect.appendChild(option);
         });
-        DOM.roleSelect.value = UI_STATE.currentRoleName;
+        DOM.roleSelect.value = roleState.currentRoleName;
         updateRoleActionState();
     }
 
@@ -137,7 +139,7 @@ export function createRolesModule(deps) {
     }
 
     function renderCurrentRoleCard() {
-        const roleCard = UI_STATE.currentRoleCard;
+        const roleCard = roleState.currentRoleCard;
 
         if (DOM.rolePromptPreview) {
             DOM.rolePromptPreview.textContent = roleCard && roleCard.prompt
@@ -159,7 +161,7 @@ export function createRolesModule(deps) {
     }
 
     function setRoleControlsBusy(isBusy, statusText = null) {
-        UI_STATE.roleLoading = isBusy;
+        roleState.roleLoading = isBusy;
         if (typeof statusText === "string") {
             setRoleStatus(statusText);
         }
@@ -174,13 +176,13 @@ export function createRolesModule(deps) {
     }
 
     function updateRoleActionState() {
-        const roleCard = UI_STATE.currentRoleCard;
-        const isBusy = UI_STATE.chatBusy || UI_STATE.roleLoading;
-        const editorOpen = UI_STATE.roleEditorMode !== "closed";
+        const roleCard = roleState.currentRoleCard;
+        const isBusy = chatState.chatBusy || roleState.roleLoading;
+        const editorOpen = roleState.roleEditorMode !== "closed";
         const controlsLocked = isBusy || editorOpen;
 
         if (DOM.roleSelect) {
-            DOM.roleSelect.disabled = controlsLocked || !UI_STATE.roles || UI_STATE.roles.length === 0;
+            DOM.roleSelect.disabled = controlsLocked || !roleState.roles || roleState.roles.length === 0;
         }
         if (DOM.roleRefreshButton) {
             DOM.roleRefreshButton.disabled = controlsLocked;
@@ -198,7 +200,7 @@ export function createRolesModule(deps) {
             DOM.roleSaveButton.disabled = isBusy || !editorOpen;
         }
         if (DOM.roleCancelButton) {
-            DOM.roleCancelButton.disabled = UI_STATE.roleLoading;
+            DOM.roleCancelButton.disabled = roleState.roleLoading;
         }
         if (DOM.rolePreview) {
             DOM.rolePreview.hidden = editorOpen;
@@ -207,11 +209,11 @@ export function createRolesModule(deps) {
             DOM.roleEditor.hidden = !editorOpen;
         }
         if (DOM.roleNameInput) {
-            DOM.roleNameInput.disabled = UI_STATE.roleLoading || UI_STATE.roleEditorMode !== "create";
-            DOM.roleNameInput.readOnly = UI_STATE.roleEditorMode !== "create";
+            DOM.roleNameInput.disabled = roleState.roleLoading || roleState.roleEditorMode !== "create";
+            DOM.roleNameInput.readOnly = roleState.roleEditorMode !== "create";
         }
         if (DOM.rolePromptInput) {
-            DOM.rolePromptInput.disabled = UI_STATE.roleLoading || !editorOpen;
+            DOM.rolePromptInput.disabled = roleState.roleLoading || !editorOpen;
         }
     }
 
@@ -223,9 +225,9 @@ export function createRolesModule(deps) {
         const nextRoleName = String(DOM.roleSelect.value || "").trim();
         if (
             !nextRoleName
-            || nextRoleName === UI_STATE.currentRoleName
-            || UI_STATE.chatBusy
-            || UI_STATE.roleLoading
+            || nextRoleName === roleState.currentRoleName
+            || chatState.chatBusy
+            || roleState.roleLoading
         ) {
             renderRoleSelectOptions();
             return;
@@ -236,7 +238,7 @@ export function createRolesModule(deps) {
         try {
             await setCurrentSessionRole(nextRoleName, { silent: true });
             await refreshCurrentRoleCard({ silent: true });
-            setRunStatus(`已切换角色卡：${UI_STATE.currentRoleName}`);
+            setRunStatus(`已切换角色卡：${roleState.currentRoleName}`);
             setRoleStatus("");
         } catch (error) {
             console.error(error);
@@ -250,7 +252,7 @@ export function createRolesModule(deps) {
 
     async function setCurrentSessionRole(roleName, options = {}) {
         const sessionName = normalizeSessionName(
-            UI_STATE.currentSessionName || DEFAULT_SESSION_NAME,
+            sessionState.currentSessionName || DEFAULT_SESSION_NAME,
         );
         const sessionDetail = await requestJson(
             `/api/sessions/${encodeURIComponent(sessionName)}/role`,
@@ -274,11 +276,11 @@ export function createRolesModule(deps) {
             return;
         }
 
-        if (mode === "edit" && (!UI_STATE.currentRoleCard || !UI_STATE.currentRoleCard.editable)) {
+        if (mode === "edit" && (!roleState.currentRoleCard || !roleState.currentRoleCard.editable)) {
             return;
         }
 
-        UI_STATE.roleEditorMode = mode;
+        roleState.roleEditorMode = mode;
         DOM.roleEditor.hidden = false;
         if (mode === "create") {
             DOM.roleEditorTitle.textContent = "新建角色卡";
@@ -286,16 +288,16 @@ export function createRolesModule(deps) {
             DOM.rolePromptInput.value = "";
             DOM.roleNameInput.focus();
         } else {
-            DOM.roleEditorTitle.textContent = `编辑角色卡：${UI_STATE.currentRoleCard.name}`;
-            DOM.roleNameInput.value = UI_STATE.currentRoleCard.name || "";
-            DOM.rolePromptInput.value = UI_STATE.currentRoleCard.prompt || "";
+            DOM.roleEditorTitle.textContent = `编辑角色卡：${roleState.currentRoleCard.name}`;
+            DOM.roleNameInput.value = roleState.currentRoleCard.name || "";
+            DOM.rolePromptInput.value = roleState.currentRoleCard.prompt || "";
             DOM.rolePromptInput.focus();
         }
         updateRoleActionState();
     }
 
     function closeRoleEditor() {
-        UI_STATE.roleEditorMode = "closed";
+        roleState.roleEditorMode = "closed";
         if (DOM.roleEditor) {
             DOM.roleEditor.hidden = true;
         }
@@ -312,7 +314,7 @@ export function createRolesModule(deps) {
     }
 
     async function handleEditRoleClick() {
-        if (!UI_STATE.currentRoleCard || !UI_STATE.currentRoleCard.editable) {
+        if (!roleState.currentRoleCard || !roleState.currentRoleCard.editable) {
             return;
         }
         await refreshCurrentRoleCard({ silent: true });
@@ -321,16 +323,16 @@ export function createRolesModule(deps) {
 
     async function handleSaveRoleClick() {
         if (
-            UI_STATE.chatBusy
-            || UI_STATE.roleLoading
-            || UI_STATE.roleEditorMode === "closed"
+            chatState.chatBusy
+            || roleState.roleLoading
+            || roleState.roleEditorMode === "closed"
         ) {
             return;
         }
 
         const roleName = DOM.roleNameInput ? DOM.roleNameInput.value.trim() : "";
         const prompt = DOM.rolePromptInput ? DOM.rolePromptInput.value.trim() : "";
-        const isCreateMode = UI_STATE.roleEditorMode === "create";
+        const isCreateMode = roleState.roleEditorMode === "create";
         let shouldRefreshRoleList = false;
         if (!prompt) {
             setRoleStatus("角色卡内容不能为空。");
@@ -362,7 +364,7 @@ export function createRolesModule(deps) {
                 shouldRefreshRoleList = true;
             } else {
                 roleDetail = await requestJson(
-                    `/api/roles/${encodeURIComponent(UI_STATE.currentRoleName)}`,
+                    `/api/roles/${encodeURIComponent(roleState.currentRoleName)}`,
                     {
                         method: "PUT",
                         headers: {
@@ -375,8 +377,8 @@ export function createRolesModule(deps) {
                 );
             }
 
-            UI_STATE.currentRoleName = roleDetail.name || UI_STATE.currentRoleName;
-            UI_STATE.currentRoleCard = roleDetail;
+            roleState.currentRoleName = roleDetail.name || roleState.currentRoleName;
+            roleState.currentRoleCard = roleDetail;
             renderCurrentRoleCard();
             closeRoleEditor();
             await refreshCurrentRoleCard({ silent: true });
@@ -400,12 +402,12 @@ export function createRolesModule(deps) {
     }
 
     async function handleDeleteRoleClick() {
-        const roleCard = UI_STATE.currentRoleCard;
+        const roleCard = roleState.currentRoleCard;
         if (
             !roleCard
             || !roleCard.deletable
-            || UI_STATE.chatBusy
-            || UI_STATE.roleLoading
+            || chatState.chatBusy
+            || roleState.roleLoading
         ) {
             return;
         }

@@ -1,4 +1,4 @@
-import { DEFAULT_SESSION_NAME } from "./state.js";
+import { DEFAULT_SESSION_NAME } from "../core/store.js";
 
 export function normalizeSessionName(value) {
     const trimmed = String(value || "").trim();

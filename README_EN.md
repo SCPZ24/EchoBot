@@ -142,7 +142,9 @@ Upload your favorite background images via the web control panel:
 
 ### 🖼️ Image Upload
 
-For vision-capable models (e.g., qwen3.5-plus), you can send images directly to your companion. (Make sure the model supports vision — otherwise an empty response will be returned.)
+For vision-capable models (e.g., `qwen3.5-plus` and `kimi-k2.5`), you can send images directly to your companion.
+
+> 💡 **Tip**: If your model does not support image input, set `ECHOBOT_LLM_SUPPORTS_IMAGE_INPUT=false` in the project's `.env` file to reduce accidental image-related actions by the assistant.
 
 <p align="center">
   <img src="./assets/webui_image.png" width="100%">

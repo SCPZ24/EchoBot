@@ -1,0 +1,129 @@
+﻿@media (max-width: 1120px) {
+    body {
+        overflow: auto;
+    }
+
+    .page-shell {
+        grid-template-columns: 1fr;
+        height: auto;
+        min-height: 100vh;
+        min-height: 100dvh;
+        overflow: visible;
+    }
+
+    .stage-panel {
+        min-height: 56vh;
+    }
+
+    .chat-panel {
+        min-height: 640px;
+        height: auto;
+    }
+
+    .live2d-stage {
+        min-height: 360px;
+    }
+
+    .stage-background-transform-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .stage-effects-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 640px) {
+    .page-shell {
+        padding: 14px;
+        gap: 14px;
+    }
+
+    .chat-main {
+        gap: 14px;
+        padding: 14px;
+    }
+
+    .stage-header,
+    .panel-section,
+    .composer {
+        padding: 18px;
+    }
+
+    .field-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .settings-summary,
+    .settings-panel-body,
+    .cron-summary,
+    .heartbeat-summary,
+    .cron-panel-body,
+    .heartbeat-panel-body {
+        padding-left: 18px;
+        padding-right: 18px;
+    }
+
+    .stage-header {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .panel-header {
+        flex-wrap: wrap;
+    }
+
+    .session-sidebar,
+    .role-sidebar {
+        width: calc(100% - 14px);
+        padding: 18px;
+    }
+
+    .stage-actions,
+    .composer-actions,
+    .panel-header-actions,
+    .voice-input-controls,
+    .voice-input-row {
+        width: 100%;
+        justify-content: space-between;
+    }
+
+    .stage-header-meta {
+        width: 100%;
+    }
+
+    .message {
+        max-width: 94%;
+    }
+
+    .message-system .message-text {
+        max-width: 100%;
+    }
+
+    .composer {
+        margin: 0 14px 14px;
+        padding: 14px;
+    }
+
+    .composer textarea {
+        min-height: 88px;
+    }
+
+    .composer-file-chip {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .composer-file-remove {
+        align-self: flex-end;
+    }
+
+    .composer-image-chip {
+        width: 78px;
+        height: 78px;
+    }
+
+    .message-image {
+        max-width: 100%;
+    }
+}

@@ -1,4 +1,5 @@
-import { DOM, UI_STATE } from "./state.js";
+import { DOM } from "../core/dom.js";
+import { messageState } from "../core/store.js";
 import {
     FILE_ATTACHMENT_CONTENT_BLOCK_TYPE,
     IMAGE_URL_CONTENT_BLOCK_TYPE,
@@ -14,7 +15,7 @@ import { buildMarkdownFragment } from "./markdown.js";
 let pendingScrollFrameId = 0;
 
 export function addMessage(kind, content, label, options = {}) {
-    const messageId = `msg-${++UI_STATE.messageCounter}`;
+    const messageId = `msg-${++messageState.counter}`;
     const container = document.createElement("article");
     container.className = `message message-${kind}`;
     container.dataset.messageId = messageId;
@@ -61,7 +62,7 @@ export function updateMessage(messageId, content, label, options = {}) {
 export function clearMessages() {
     clearMathTypesetting(DOM.messages);
     DOM.messages.innerHTML = "";
-    UI_STATE.messageCounter = 0;
+    messageState.counter = 0;
 }
 
 export function scheduleMessagesScrollToBottom() {

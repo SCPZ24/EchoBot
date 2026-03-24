@@ -1,5 +1,5 @@
 import { messageContentToText } from "./content.js";
-import { DOM } from "./state.js";
+import { DOM } from "../core/dom.js";
 
 const SKILL_TOOL_NAMES = new Set([
     "activate_skill",

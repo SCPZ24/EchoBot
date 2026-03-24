@@ -5,16 +5,12 @@ import json
 import os
 import re
 import shutil
-from dataclasses import asdict
 from dataclasses import dataclass
 from pathlib import Path
 from pathlib import PurePosixPath
 from typing import Any
 from urllib.parse import quote
 
-from ...asr import ASRService
-from ...runtime.settings import RuntimeSettingsStore
-from ...tts import TTSService
 
 DEFAULT_LIP_SYNC_PARAMETER_IDS = [
     "ParamMouthOpenY",
@@ -28,20 +24,6 @@ DEFAULT_MOUTH_FORM_PARAMETER_IDS = [
 ]
 LIVE2D_SOURCE_WORKSPACE = "workspace"
 LIVE2D_SOURCE_BUILTIN = "builtin"
-STAGE_BACKGROUND_SOURCE_WORKSPACE = "workspace"
-STAGE_BACKGROUND_SOURCE_BUILTIN = "builtin"
-DEFAULT_STAGE_BACKGROUND_KEY = "default"
-DEFAULT_STAGE_BACKGROUND_KIND = "none"
-BUILTIN_STAGE_BACKGROUND_KIND = "builtin"
-UPLOADED_STAGE_BACKGROUND_KIND = "uploaded"
-ALLOWED_STAGE_BACKGROUND_SUFFIXES = {
-    ".png",
-    ".jpg",
-    ".jpeg",
-    ".webp",
-    ".gif",
-    ".avif",
-}
 ALLOWED_LIVE2D_UPLOAD_SUFFIXES = {
     ".json",
     ".moc3",
@@ -58,7 +40,6 @@ ALLOWED_LIVE2D_UPLOAD_SUFFIXES = {
 }
 MAX_LIVE2D_UPLOAD_FILES = 512
 MAX_LIVE2D_UPLOAD_TOTAL_BYTES = 200 * 1024 * 1024
-MAX_STAGE_BACKGROUND_BYTES = 10 * 1024 * 1024
 
 
 @dataclass(slots=True, frozen=True)
@@ -74,68 +55,30 @@ class Live2DUploadFile:
     file_bytes: bytes
 
 
-class WebConsoleService:
-    def __init__(
-        self,
-        workspace: Path,
-        tts_service: TTSService,
-        asr_service: ASRService,
-    ) -> None:
-        self._workspace = workspace
-        self._tts_service = tts_service
-        self._asr_service = asr_service
-        self._runtime_settings_store = RuntimeSettingsStore(
-            workspace / ".echobot" / "runtime_settings.json",
-        )
-        self._workspace_live2d_root = workspace / ".echobot" / "live2d"
-        self._workspace_stage_background_root = workspace / ".echobot" / "web" / "backgrounds"
-        self._builtin_live2d_root = Path(__file__).resolve().parent.parent / "builtin_live2d"
-        self._builtin_stage_background_root = (
-            Path(__file__).resolve().parent.parent / "builtin_stage_backgrounds"
-        )
+class Live2DService:
+    def __init__(self, workspace_root: Path, builtin_root: Path) -> None:
+        self._workspace_root = workspace_root
+        self._builtin_root = builtin_root
 
-    @property
-    def tts_service(self) -> TTSService:
-        return self._tts_service
+    async def build_config(self) -> dict[str, Any] | None:
+        return await asyncio.to_thread(self._build_config_sync)
 
-    @property
-    def asr_service(self) -> ASRService:
-        return self._asr_service
-
-    async def build_frontend_config(
-        self,
-        *,
-        session_name: str,
-        role_name: str,
-        route_mode: str,
-        delegated_ack_enabled: bool,
-    ) -> dict[str, Any]:
-        live2d = await asyncio.to_thread(self._discover_live2d_model_sync)
-        stage = await asyncio.to_thread(self._build_stage_config_sync)
+    def empty_config(self) -> dict[str, Any]:
         return {
-            "session_name": session_name,
-            "role_name": role_name,
-            "route_mode": route_mode,
-            "runtime": {
-                "delegated_ack_enabled": bool(delegated_ack_enabled),
-            },
-            "live2d": live2d or self._empty_live2d_config(),
-            "stage": stage,
-            "asr": asdict(await self._asr_service.status_snapshot()),
-            "tts": {
-                "default_provider": self._tts_service.default_provider,
-                "default_voice": self._tts_service.default_voice_for(),
-                "default_voices": {
-                    provider_name: self._tts_service.default_voice_for(provider_name)
-                    for provider_name in self._tts_service.provider_names()
-                },
-                "providers": self._tts_service.providers_status(),
-            },
+            "available": False,
+            "source": "",
+            "selection_key": "",
+            "model_name": "",
+            "model_url": "",
+            "directory_name": "",
+            "lip_sync_parameter_ids": DEFAULT_LIP_SYNC_PARAMETER_IDS[:],
+            "mouth_form_parameter_id": None,
+            "models": [],
         }
 
-    def resolve_live2d_asset(self, asset_path: str) -> Path:
-        source, relative_asset_path = self._parse_live2d_asset_path(asset_path)
-        base_dir = self._live2d_root_for(source).resolve()
+    def resolve_asset(self, asset_path: str) -> Path:
+        source, relative_asset_path = self._parse_asset_path(asset_path)
+        base_dir = self._root_for(source).resolve()
         candidate = (base_dir / relative_asset_path).resolve()
         if candidate != base_dir and base_dir not in candidate.parents:
             raise ValueError(f"Invalid live2d asset path: {asset_path}")
@@ -143,75 +86,22 @@ class WebConsoleService:
             raise FileNotFoundError(asset_path)
         return candidate
 
-    async def build_stage_config(self) -> dict[str, Any]:
-        return await asyncio.to_thread(self._build_stage_config_sync)
-
-    async def save_runtime_settings(
+    async def save_directory(
         self,
-        *,
-        delegated_ack_enabled: bool,
-    ) -> dict[str, Any]:
-        settings = await asyncio.to_thread(
-            self._runtime_settings_store.update_named_value,
-            "delegated_ack_enabled",
-            bool(delegated_ack_enabled),
-        )
-        return settings.to_dict()
-
-    def resolve_stage_background_asset(self, asset_path: str) -> Path:
-        source, relative_path = self._parse_stage_background_asset_path(asset_path)
-        if not relative_path.parts:
-            raise ValueError("Stage background path must not be empty")
-
-        base_dir = self._stage_background_root_for(source).resolve()
-        candidate = (base_dir / relative_path).resolve()
-        if candidate != base_dir and base_dir not in candidate.parents:
-            raise ValueError(f"Invalid stage background path: {asset_path}")
-        if not candidate.is_file():
-            raise FileNotFoundError(asset_path)
-        return candidate
-
-    async def save_stage_background(
-        self,
-        *,
-        filename: str,
-        content_type: str | None,
-        file_bytes: bytes,
-    ) -> dict[str, Any]:
-        cleaned_name = self._clean_stage_background_filename(filename)
-        if not cleaned_name:
-            raise ValueError("Background file name must not be empty")
-        if not file_bytes:
-            raise ValueError("Background file must not be empty")
-        if len(file_bytes) > MAX_STAGE_BACKGROUND_BYTES:
-            raise ValueError("Background file is too large. Keep it under 10 MB.")
-        if content_type and not content_type.startswith("image/"):
-            raise ValueError("Background file must be an image")
-
-        target_path = await asyncio.to_thread(
-            self._prepare_stage_background_path,
-            cleaned_name,
-        )
-        await asyncio.to_thread(target_path.write_bytes, file_bytes)
-        return await asyncio.to_thread(self._build_stage_config_sync)
-
-    async def save_live2d_directory(
-        self,
-        *,
         uploaded_files: list[Live2DUploadFile],
     ) -> dict[str, Any]:
         return await asyncio.to_thread(
-            self._save_live2d_directory_sync,
+            self._save_directory_sync,
             uploaded_files,
         )
 
-    def _discover_live2d_model_sync(self) -> dict[str, Any] | None:
+    def _build_config_sync(self) -> dict[str, Any] | None:
         model_candidates = self._discover_model_candidates()
         if not model_candidates:
             return None
 
         model_options = [
-            self._build_live2d_model_option(model_candidate)
+            self._build_model_option(model_candidate)
             for model_candidate in model_candidates
         ]
         selected_model = self._select_model_candidate(model_candidates)
@@ -226,12 +116,12 @@ class WebConsoleService:
             "models": model_options,
         }
 
-    def _save_live2d_directory_sync(
+    def _save_directory_sync(
         self,
         uploaded_files: list[Live2DUploadFile],
     ) -> dict[str, Any]:
-        root_directory_name, files_to_save = self._normalize_live2d_upload_files(uploaded_files)
-        target_directory = self._prepare_live2d_upload_directory(root_directory_name)
+        root_directory_name, files_to_save = self._normalize_upload_files(uploaded_files)
+        target_directory = self._prepare_upload_directory(root_directory_name)
 
         try:
             for relative_path, file_bytes in files_to_save:
@@ -239,7 +129,7 @@ class WebConsoleService:
                 target_file.parent.mkdir(parents=True, exist_ok=True)
                 target_file.write_bytes(file_bytes)
 
-            live2d_config = self._discover_live2d_model_sync()
+            live2d_config = self._build_config_sync()
             if live2d_config is None:
                 raise ValueError("No Live2D model was found after upload")
             return live2d_config
@@ -247,25 +137,9 @@ class WebConsoleService:
             shutil.rmtree(target_directory, ignore_errors=True)
             raise
 
-    def _build_stage_config_sync(self) -> dict[str, Any]:
-        backgrounds = [self._default_stage_background_option()]
-        backgrounds.extend(
-            self._stage_background_option_for(path, source=STAGE_BACKGROUND_SOURCE_BUILTIN)
-            for path in self._stage_background_files(self._builtin_stage_background_root)
-        )
-        backgrounds.extend(
-            self._stage_background_option_for(path, source=STAGE_BACKGROUND_SOURCE_WORKSPACE)
-            for path in self._stage_background_files(self._workspace_stage_background_root)
-        )
-
-        return {
-            "default_background_key": DEFAULT_STAGE_BACKGROUND_KEY,
-            "backgrounds": backgrounds,
-        }
-
     def _discover_model_candidates(self) -> list[Live2DModelCandidate]:
         model_candidates: list[Live2DModelCandidate] = []
-        for source, root in self._live2d_roots():
+        for source, root in self._roots():
             if not root.exists():
                 continue
 
@@ -328,7 +202,7 @@ class WebConsoleService:
             source_named_directory,
         }
 
-    def _build_live2d_model_option(
+    def _build_model_option(
         self,
         model_candidate: Live2DModelCandidate,
     ) -> dict[str, Any]:
@@ -379,18 +253,18 @@ class WebConsoleService:
             "mouth_form_parameter_id": mouth_form_parameter_id,
         }
 
-    def _live2d_roots(self) -> list[tuple[str, Path]]:
+    def _roots(self) -> list[tuple[str, Path]]:
         return [
-            (LIVE2D_SOURCE_WORKSPACE, self._workspace_live2d_root),
-            (LIVE2D_SOURCE_BUILTIN, self._builtin_live2d_root),
+            (LIVE2D_SOURCE_WORKSPACE, self._workspace_root),
+            (LIVE2D_SOURCE_BUILTIN, self._builtin_root),
         ]
 
-    def _live2d_root_for(self, source: str) -> Path:
+    def _root_for(self, source: str) -> Path:
         if source == LIVE2D_SOURCE_BUILTIN:
-            return self._builtin_live2d_root
-        return self._workspace_live2d_root
+            return self._builtin_root
+        return self._workspace_root
 
-    def _parse_live2d_asset_path(self, asset_path: str) -> tuple[str, Path]:
+    def _parse_asset_path(self, asset_path: str) -> tuple[str, Path]:
         relative_path = Path(asset_path)
         if not relative_path.parts:
             raise ValueError("Live2D asset path must not be empty")
@@ -404,7 +278,7 @@ class WebConsoleService:
 
         return LIVE2D_SOURCE_WORKSPACE, relative_path
 
-    def _normalize_live2d_upload_files(
+    def _normalize_upload_files(
         self,
         uploaded_files: list[Live2DUploadFile],
     ) -> tuple[str, list[tuple[PurePosixPath, bytes]]]:
@@ -418,8 +292,8 @@ class WebConsoleService:
         root_names: set[str] = set()
 
         for uploaded_file in uploaded_files:
-            relative_path = self._clean_live2d_upload_relative_path(uploaded_file.relative_path)
-            if not self._is_supported_live2d_upload_path(relative_path):
+            relative_path = self._clean_upload_relative_path(uploaded_file.relative_path)
+            if not self._is_supported_upload_path(relative_path):
                 continue
 
             if not uploaded_file.file_bytes:
@@ -442,7 +316,7 @@ class WebConsoleService:
         return next(iter(root_names)), normalized_files
 
     @staticmethod
-    def _clean_live2d_upload_relative_path(relative_path: str) -> PurePosixPath:
+    def _clean_upload_relative_path(relative_path: str) -> PurePosixPath:
         raw_path = str(relative_path or "").replace("\\", "/").strip()
         if not raw_path:
             raise ValueError("Live2D file path must not be empty")
@@ -459,24 +333,24 @@ class WebConsoleService:
         return normalized_path
 
     @staticmethod
-    def _is_supported_live2d_upload_path(relative_path: PurePosixPath) -> bool:
+    def _is_supported_upload_path(relative_path: PurePosixPath) -> bool:
         return relative_path.suffix.lower() in ALLOWED_LIVE2D_UPLOAD_SUFFIXES
 
-    def _prepare_live2d_upload_directory(self, directory_name: str) -> Path:
-        self._workspace_live2d_root.mkdir(parents=True, exist_ok=True)
+    def _prepare_upload_directory(self, directory_name: str) -> Path:
+        self._workspace_root.mkdir(parents=True, exist_ok=True)
 
-        cleaned_name = self._clean_live2d_upload_directory_name(directory_name)
-        candidate = self._workspace_live2d_root / cleaned_name
+        cleaned_name = self._clean_upload_directory_name(directory_name)
+        candidate = self._workspace_root / cleaned_name
         index = 2
         while candidate.exists():
-            candidate = self._workspace_live2d_root / f"{cleaned_name}-{index}"
+            candidate = self._workspace_root / f"{cleaned_name}-{index}"
             index += 1
 
         candidate.mkdir(parents=True, exist_ok=False)
         return candidate
 
     @staticmethod
-    def _clean_live2d_upload_directory_name(directory_name: str) -> str:
+    def _clean_upload_directory_name(directory_name: str) -> str:
         raw_name = Path(str(directory_name or "")).name.strip()
         cleaned_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", raw_name).strip(" .")
         return cleaned_name or "live2d-model"
@@ -539,107 +413,3 @@ class WebConsoleService:
         relative_path = model_candidate.model_path.relative_to(model_candidate.root)
         return f"{model_candidate.source}:{relative_path.as_posix()}"
 
-    @staticmethod
-    def _default_stage_background_option() -> dict[str, Any]:
-        return {
-            "key": DEFAULT_STAGE_BACKGROUND_KEY,
-            "label": "不使用背景",
-            "url": "",
-            "kind": DEFAULT_STAGE_BACKGROUND_KIND,
-        }
-
-    def _stage_background_option_for(self, path: Path, *, source: str) -> dict[str, Any]:
-        if source == STAGE_BACKGROUND_SOURCE_BUILTIN:
-            key = f"{STAGE_BACKGROUND_SOURCE_BUILTIN}:{path.name}"
-            url = f"/api/web/stage/backgrounds/{STAGE_BACKGROUND_SOURCE_BUILTIN}/{quote(path.name)}"
-            kind = BUILTIN_STAGE_BACKGROUND_KIND
-        else:
-            key = path.name
-            url = f"/api/web/stage/backgrounds/{quote(path.name)}"
-            kind = UPLOADED_STAGE_BACKGROUND_KIND
-
-        return {
-            "key": key,
-            "label": path.stem,
-            "url": url,
-            "kind": kind,
-        }
-
-    @staticmethod
-    def _stage_background_files(root: Path) -> list[Path]:
-        if not root.exists():
-            return []
-
-        return sorted(
-            (
-                path
-                for path in root.iterdir()
-                if path.is_file() and path.suffix.lower() in ALLOWED_STAGE_BACKGROUND_SUFFIXES
-            ),
-            key=lambda path: path.name.casefold(),
-        )
-
-    def _stage_background_root_for(self, source: str) -> Path:
-        if source == STAGE_BACKGROUND_SOURCE_BUILTIN:
-            return self._builtin_stage_background_root
-        return self._workspace_stage_background_root
-
-    @staticmethod
-    def _parse_stage_background_asset_path(asset_path: str) -> tuple[str, Path]:
-        relative_path = Path(asset_path)
-        if not relative_path.parts:
-            raise ValueError("Stage background path must not be empty")
-
-        source = relative_path.parts[0]
-        if source in {STAGE_BACKGROUND_SOURCE_WORKSPACE, STAGE_BACKGROUND_SOURCE_BUILTIN}:
-            resolved_path = Path(*relative_path.parts[1:])
-            if not resolved_path.parts:
-                raise ValueError(f"Invalid stage background path: {asset_path}")
-            return source, resolved_path
-
-        return STAGE_BACKGROUND_SOURCE_WORKSPACE, relative_path
-
-    def _prepare_stage_background_path(self, filename: str) -> Path:
-        self._workspace_stage_background_root.mkdir(parents=True, exist_ok=True)
-
-        original_path = Path(filename)
-        stem = original_path.stem
-        suffix = original_path.suffix.lower()
-        candidate = self._workspace_stage_background_root / f"{stem}{suffix}"
-        index = 2
-        while candidate.exists():
-            candidate = self._workspace_stage_background_root / f"{stem}-{index}{suffix}"
-            index += 1
-        return candidate
-
-    @staticmethod
-    def _clean_stage_background_filename(filename: str) -> str:
-        raw_name = Path(str(filename or "")).name.strip()
-        if not raw_name:
-            return ""
-
-        suffix = Path(raw_name).suffix.lower()
-        if suffix not in ALLOWED_STAGE_BACKGROUND_SUFFIXES:
-            raise ValueError("Only png, jpg, jpeg, webp, gif, and avif backgrounds are supported")
-
-        stem = Path(raw_name).stem.strip()
-        stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", stem)
-        stem = re.sub(r"\s+", "_", stem)
-        stem = re.sub(r"_+", "_", stem).strip(" ._")
-        if not stem:
-            stem = "background"
-        return f"{stem}{suffix}"
-
-    @staticmethod
-    def _empty_live2d_config() -> dict[str, Any]:
-        return {
-            "available": False,
-            "source": "",
-            "selection_key": "",
-            "model_name": "",
-            "model_url": "",
-            "directory_name": "",
-            "lip_sync_parameter_ids": DEFAULT_LIP_SYNC_PARAMETER_IDS[:],
-            "mouth_form_parameter_id": None,
-            "models": [],
-        }
