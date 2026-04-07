@@ -12,7 +12,7 @@ from .conversion import (
     _tool_response_to_text,
     _try_parse_json,
 )
-from .imports import ReMeLight
+from .imports import Msg, ReMeLight
 from .settings import MemoryPreparationResult, ReMeLightSettings
 
 
@@ -56,8 +56,6 @@ class ReMeLightSupport:
                 },
                 vector_weight=self.settings.vector_weight,
                 candidate_multiplier=self.settings.candidate_multiplier,
-                tool_result_threshold=self.settings.tool_result_threshold,
-                retention_days=self.settings.retention_days,
             )
             await reme.start()
             await asyncio.to_thread(self._ensure_memory_files)
@@ -92,6 +90,11 @@ class ReMeLightSupport:
         await self.ensure_started()
         reme = self._require_reme()
         agent_messages = _llm_messages_to_agentscope(messages)
+        await self._compact_tool_results(
+            reme,
+            agent_messages,
+            keep_recent_messages=self.settings.tool_result_compact_keep_n,
+        )
         processed_messages, next_summary = await reme.pre_reasoning_hook(
             messages=agent_messages,
             system_prompt=system_prompt,
@@ -100,8 +103,7 @@ class ReMeLightSupport:
             max_input_length=self.settings.max_input_length,
             compact_ratio=self.settings.compact_ratio,
             memory_compact_reserve=self.settings.memory_compact_reserve,
-            enable_tool_result_compact=True,
-            tool_result_compact_keep_n=self.settings.tool_result_compact_keep_n,
+            enable_tool_result_compact=False,
         )
         return MemoryPreparationResult(
             messages=_agentscope_messages_to_llm(processed_messages),
@@ -120,7 +122,7 @@ class ReMeLightSupport:
         await self.ensure_started()
         reme = self._require_reme()
         agent_messages = _llm_messages_to_agentscope(turn_messages)
-        compacted_messages = await reme.compact_tool_result(agent_messages)
+        compacted_messages = await self._compact_tool_results(reme, agent_messages)
         reme.add_async_summary_task(
             messages=compacted_messages,
             language=self.settings.language,
@@ -176,6 +178,28 @@ class ReMeLightSupport:
                 "Use this file for durable user preferences, important decisions, and recurring setup notes.\n",
                 encoding="utf-8",
             )
+
+    async def _compact_tool_results(
+        self,
+        reme: ReMeLight,
+        messages: list[Msg],
+        *,
+        keep_recent_messages: int = 0,
+    ) -> list[Msg]:
+        cutoff = len(messages) - max(keep_recent_messages, 0)
+        if cutoff <= 0:
+            return messages
+
+        messages_to_compact = list(messages[:cutoff])
+        compacted_messages = await reme.compact_tool_result(
+            messages_to_compact,
+            old_max_bytes=self.settings.tool_result_threshold,
+            recent_max_bytes=self.settings.tool_result_threshold,
+            retention_days=self.settings.retention_days,
+            recent_n=0,
+        )
+        messages[:cutoff] = compacted_messages
+        return messages
 
     def _require_reme(self) -> ReMeLight:
         if self._reme is None:

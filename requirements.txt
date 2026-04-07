@@ -9,7 +9,7 @@ openai
 
 # Memory
 agentscope
-reme-ai[light] @ git+https://github.com/agentscope-ai/ReMe.git
+reme-ai[light]==0.3.1.8
 
 # Document processing
 # defusedxml

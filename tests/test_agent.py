@@ -13,6 +13,7 @@ from echobot.config import load_env_file
 from echobot.memory import (
     MemoryPreparationResult,
     ReMeLightSettings,
+    ReMeLightSupport,
     _configure_reme_internal_console_output,
     _agentscope_messages_to_llm,
     _llm_messages_to_agentscope,
@@ -77,6 +78,42 @@ class FakeMemorySupport:
 
     def build_summary_message(self, compressed_summary: str) -> str:
         return f"summary::{compressed_summary}" if compressed_summary else ""
+
+
+class FakeReMeLight:
+    instances: list["FakeReMeLight"] = []
+
+    def __init__(self, **kwargs) -> None:
+        self.init_kwargs = kwargs
+        self.compact_calls = []
+        self.pre_reasoning_kwargs = {}
+        self.summary_task_calls = []
+        FakeReMeLight.instances.append(self)
+
+    async def start(self) -> None:
+        return None
+
+    async def compact_tool_result(self, messages, **kwargs):
+        self.compact_calls.append(
+            {
+                "messages": list(messages),
+                "kwargs": kwargs,
+            }
+        )
+        return list(messages)
+
+    async def pre_reasoning_hook(self, **kwargs):
+        self.pre_reasoning_kwargs = kwargs
+        return kwargs["messages"], "summary"
+
+    def add_async_summary_task(self, **kwargs) -> None:
+        self.summary_task_calls.append(kwargs)
+
+    async def await_summary_tasks(self) -> str:
+        return ""
+
+    async def close(self) -> bool:
+        return True
 
 
 class EchoTool(BaseTool):
@@ -761,6 +798,76 @@ class ReMeLightSettingsTests(unittest.TestCase):
                 )
 
             self.assertTrue(settings.console_output_enabled)
+
+
+class ReMeLightSupportTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        FakeReMeLight.instances.clear()
+
+    async def test_ensure_started_uses_latest_reme_light_constructor(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = self._build_settings(Path(temp_dir))
+
+            with patch("echobot.memory.support.ReMeLight", FakeReMeLight):
+                support = ReMeLightSupport(settings)
+                await support.ensure_started()
+
+            init_kwargs = FakeReMeLight.instances[0].init_kwargs
+            self.assertNotIn("tool_result_threshold", init_kwargs)
+            self.assertNotIn("retention_days", init_kwargs)
+            self.assertEqual(str(settings.working_dir), init_kwargs["working_dir"])
+
+    async def test_compact_history_passes_tool_result_settings_to_reme(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = self._build_settings(
+                Path(temp_dir),
+                tool_result_threshold=1234,
+                retention_days=9,
+                tool_result_compact_keep_n=1,
+            )
+
+            with patch("echobot.memory.support.ReMeLight", FakeReMeLight):
+                support = ReMeLightSupport(settings)
+                result = await support.compact_history(
+                    [
+                        LLMMessage(role="user", content="one"),
+                        LLMMessage(role="assistant", content="two"),
+                        LLMMessage(role="user", content="three"),
+                    ],
+                    system_prompt="system",
+                    compressed_summary="",
+                )
+
+            reme = FakeReMeLight.instances[0]
+            self.assertEqual("summary", result.compressed_summary)
+            self.assertEqual(1, len(reme.compact_calls))
+            self.assertEqual(2, len(reme.compact_calls[0]["messages"]))
+            self.assertEqual(
+                {
+                    "old_max_bytes": 1234,
+                    "recent_max_bytes": 1234,
+                    "retention_days": 9,
+                    "recent_n": 0,
+                },
+                reme.compact_calls[0]["kwargs"],
+            )
+            self.assertFalse(
+                reme.pre_reasoning_kwargs["enable_tool_result_compact"],
+            )
+
+    @staticmethod
+    def _build_settings(
+        working_dir: Path,
+        **overrides,
+    ) -> ReMeLightSettings:
+        values = {
+            "working_dir": working_dir,
+            "llm_api_key": "test-key",
+            "llm_base_url": "https://example.com/v1",
+            "llm_model": "test-model",
+        }
+        values.update(overrides)
+        return ReMeLightSettings(**values)
 
 
 class ReMeConsoleOutputPatchTests(unittest.TestCase):
