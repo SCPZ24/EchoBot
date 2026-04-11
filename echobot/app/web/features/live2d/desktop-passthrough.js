@@ -26,6 +26,33 @@ export function isDesktopMouseCaptureRegion(target) {
     return isDesktopInteractiveRegion(target) || getDesktopResizeEdge(target) !== "";
 }
 
+export function isCursorInsideDesktopWindow(cursorState) {
+    const cursorX = Number(cursorState?.cursorX);
+    const cursorY = Number(cursorState?.cursorY);
+    const windowX = Number(cursorState?.windowBounds?.x);
+    const windowY = Number(cursorState?.windowBounds?.y);
+    const windowWidth = Number(cursorState?.windowBounds?.width);
+    const windowHeight = Number(cursorState?.windowBounds?.height);
+
+    if (
+        !Number.isFinite(cursorX)
+        || !Number.isFinite(cursorY)
+        || !Number.isFinite(windowX)
+        || !Number.isFinite(windowY)
+        || !Number.isFinite(windowWidth)
+        || !Number.isFinite(windowHeight)
+    ) {
+        return false;
+    }
+
+    return (
+        cursorX >= windowX
+        && cursorX <= windowX + windowWidth
+        && cursorY >= windowY
+        && cursorY <= windowY + windowHeight
+    );
+}
+
 export function findDesktopMouseCaptureIntent(cursorState, root, rootRect) {
     if (!root || typeof root.querySelectorAll !== "function") {
         return {

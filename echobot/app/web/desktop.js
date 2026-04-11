@@ -7,6 +7,7 @@ import {
     findDesktopMouseCaptureIntent,
     getDesktopResizeEdge,
     hasUsableDesktopPassthroughBridge,
+    isCursorInsideDesktopWindow,
     isDesktopMouseCaptureRegion,
 } from "./features/live2d/desktop-passthrough.js";
 import {
@@ -246,11 +247,16 @@ async function syncDesktopCursorFocus() {
         DOM.stageElement,
         stageRect,
     );
+    DOM.stageElement.classList.toggle(
+        "is-desktop-hovered",
+        isCursorInsideDesktopWindow(cursorState),
+    );
     void setDesktopMousePassthrough(!captureIntent.capture);
     if (!stagePoint) {
         return;
     }
 
+    live2d.setDesktopCursorOverlapFromStagePoint(stagePoint.x, stagePoint.y);
     live2d.applyExternalFocusPoint(stagePoint.x, stagePoint.y);
 }
 

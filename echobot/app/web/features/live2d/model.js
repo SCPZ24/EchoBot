@@ -292,6 +292,94 @@ export function createLive2DModelController(deps) {
         refreshLive2DFocusFromLastPointer();
     }
 
+    function setDesktopCursorOverlapFromStagePoint(stageX, stageY) {
+        const model = live2dState.live2dModel;
+        if (
+            !model
+            || !Number.isFinite(stageX)
+            || !Number.isFinite(stageY)
+        ) {
+            return false;
+        }
+
+        const overlapping = resolveDesktopCursorCharacterOverlap(
+            model,
+            stageX,
+            stageY,
+        );
+
+        model.visible = !overlapping;
+        return overlapping;
+    }
+
+    function resolveDesktopCursorCharacterOverlap(model, stageX, stageY) {
+        const hitAreas = resolveLive2DHitAreas(model, stageX, stageY);
+        if (hitAreas.length > 0) {
+            return true;
+        }
+
+        return isPointInsideVisibleModelRegion(model, stageX, stageY);
+    }
+
+    function resolveLive2DHitAreas(model, stageX, stageY) {
+        if (typeof model.hitTest !== "function") {
+            return [];
+        }
+
+        try {
+            const hitAreas = model.hitTest(stageX, stageY);
+            return Array.isArray(hitAreas) ? hitAreas.filter(Boolean) : [];
+        } catch (error) {
+            console.warn("Failed to run Live2D hitTest", error);
+            return [];
+        }
+    }
+
+    function isPointInsideVisibleModelRegion(model, stageX, stageY) {
+        if (typeof model.getBounds !== "function") {
+            return false;
+        }
+
+        const bounds = model.getBounds();
+        if (
+            !bounds
+            || !Number.isFinite(bounds.x)
+            || !Number.isFinite(bounds.y)
+            || !Number.isFinite(bounds.width)
+            || !Number.isFinite(bounds.height)
+            || bounds.width <= 0
+            || bounds.height <= 0
+        ) {
+            return false;
+        }
+
+        const visibleRegion = shrinkDesktopModelBounds(bounds);
+        return (
+            stageX >= visibleRegion.x
+            && stageX <= visibleRegion.x + visibleRegion.width
+            && stageY >= visibleRegion.y
+            && stageY <= visibleRegion.y + visibleRegion.height
+        );
+    }
+
+    function shrinkDesktopModelBounds(bounds) {
+        const horizontalInset = Math.min(bounds.width * 0.24, bounds.width * 0.5);
+        const topInset = Math.min(bounds.height * 0.1, bounds.height * 0.5);
+        const bottomInset = Math.min(bounds.height * 0.18, bounds.height * 0.5);
+        const width = Math.max(bounds.width - horizontalInset * 2, bounds.width * 0.2);
+        const height = Math.max(
+            bounds.height - topInset - bottomInset,
+            bounds.height * 0.2,
+        );
+
+        return {
+            x: bounds.x + (bounds.width - width) * 0.5,
+            y: bounds.y + topInset,
+            width: width,
+            height: height,
+        };
+    }
+
     function updateLive2DFocusFromGlobalPoint(globalX, globalY) {
         const model = live2dState.live2dModel;
         const internalModel = model && model.internalModel;
@@ -948,6 +1036,7 @@ export function createLive2DModelController(deps) {
         applyExternalFocusPoint,
         refreshLive2DFocusFromLastPointer,
         resetLive2DViewToDefault,
+        setDesktopCursorOverlapFromStagePoint,
         toggleExpression,
         triggerHotkey,
     };

@@ -160,6 +160,7 @@ export function createLive2DModule(deps) {
         loadLive2DModel: modelController.loadLive2DModel,
         renderLive2DControls: controlsController.renderLive2DControls,
         resetLive2DViewToDefault: modelController.resetLive2DViewToDefault,
+        setDesktopCursorOverlapFromStagePoint: modelController.setDesktopCursorOverlapFromStagePoint,
         setStageMessage,
     };
 }

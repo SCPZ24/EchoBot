@@ -44,6 +44,25 @@ body {
     pointer-events: none;
 }
 
+.desktop-stage::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 28px;
+    border: 2px solid rgba(202, 110, 63, 0.92);
+    box-shadow:
+        0 0 0 1px rgba(255, 238, 228, 0.18),
+        0 0 22px rgba(202, 110, 63, 0.3);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 140ms ease;
+    z-index: 11;
+}
+
+.desktop-stage.is-desktop-hovered::after {
+    opacity: 1;
+}
+
 .desktop-resize-corner {
     position: absolute;
     width: 24px;

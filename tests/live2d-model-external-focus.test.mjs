@@ -151,3 +151,98 @@ test("setDesktopCursorOverlap toggles live2d model visibility from stage point h
         live2dState.live2dModel = originalModel;
     }
 });
+
+test("setDesktopCursorOverlap keeps model visible when point is only inside broad bounds", async () => {
+    const { live2dState } = await import("../echobot/app/web/core/store.js");
+    const { createLive2DModelController } = await import(
+        "../echobot/app/web/features/live2d/model.js"
+    );
+
+    const originalModel = live2dState.live2dModel;
+
+    live2dState.live2dModel = {
+        visible: true,
+        hitTest() {
+            return [];
+        },
+        getBounds() {
+            return {
+                x: 20,
+                y: 40,
+                width: 320,
+                height: 520,
+            };
+        },
+    };
+
+    try {
+        const controller = createLive2DModelController({
+            clamp(value, min, max) {
+                return Math.min(Math.max(value, min), max);
+            },
+            roundTo(value) {
+                return value;
+            },
+            readJson() {
+                return null;
+            },
+            removeStoredValue() {},
+            setStageMessage() {},
+            writeJson() {},
+        });
+
+        assert.equal(controller.setDesktopCursorOverlapFromStagePoint(50, 60), false);
+        assert.equal(live2dState.live2dModel.visible, true);
+    } finally {
+        live2dState.live2dModel = originalModel;
+    }
+});
+
+test("setDesktopCursorOverlap hides model when Live2D hitTest reports a character hit", async () => {
+    const { live2dState } = await import("../echobot/app/web/core/store.js");
+    const { createLive2DModelController } = await import(
+        "../echobot/app/web/features/live2d/model.js"
+    );
+
+    const originalModel = live2dState.live2dModel;
+
+    live2dState.live2dModel = {
+        visible: true,
+        hitTest(stageX, stageY) {
+            if (stageX === 210 && stageY === 120) {
+                return ["Head"];
+            }
+            return [];
+        },
+        getBounds() {
+            return {
+                x: 20,
+                y: 40,
+                width: 320,
+                height: 520,
+            };
+        },
+    };
+
+    try {
+        const controller = createLive2DModelController({
+            clamp(value, min, max) {
+                return Math.min(Math.max(value, min), max);
+            },
+            roundTo(value) {
+                return value;
+            },
+            readJson() {
+                return null;
+            },
+            removeStoredValue() {},
+            setStageMessage() {},
+            writeJson() {},
+        });
+
+        assert.equal(controller.setDesktopCursorOverlapFromStagePoint(210, 120), true);
+        assert.equal(live2dState.live2dModel.visible, false);
+    } finally {
+        live2dState.live2dModel = originalModel;
+    }
+});
