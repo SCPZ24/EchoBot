@@ -138,6 +138,7 @@ export function createLive2DModule(deps) {
     return {
         applyConfigToUI: configController.applyConfigToUI,
         applyLive2DMouseFollowSetting: modelController.applyLive2DMouseFollowSetting,
+        applyExternalFocusPoint: modelController.applyExternalFocusPoint,
         applyMouthValue: modelController.applyMouthValue,
         handleLive2DDirectoryUpload: configController.handleLive2DDirectoryUpload,
         handleLive2DModelChange: configController.handleLive2DModelChange,

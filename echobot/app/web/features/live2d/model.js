@@ -277,6 +277,19 @@ export function createLive2DModelController(deps) {
         );
     }
 
+    function applyExternalFocusPoint(globalX, globalY) {
+        if (
+            !Number.isFinite(globalX)
+            || !Number.isFinite(globalY)
+        ) {
+            return;
+        }
+
+        live2dState.live2dLastPointerX = globalX;
+        live2dState.live2dLastPointerY = globalY;
+        refreshLive2DFocusFromLastPointer();
+    }
+
     function updateLive2DFocusFromGlobalPoint(globalX, globalY) {
         const model = live2dState.live2dModel;
         const internalModel = model && model.internalModel;
@@ -924,6 +937,7 @@ export function createLive2DModelController(deps) {
         loadLive2DModel,
         isExpressionActive,
         playMotion,
+        applyExternalFocusPoint,
         refreshLive2DFocusFromLastPointer,
         resetLive2DViewToDefault,
         toggleExpression,

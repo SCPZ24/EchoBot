@@ -3,6 +3,10 @@ import { DOM } from "./core/dom.js";
 import { appState, asrState, audioState, sessionState } from "./core/store.js";
 import { createAsrModule } from "./features/asr.js";
 import { createLive2DModule } from "./features/live2d/index.js";
+import {
+    hasUsableDesktopCursorBridge,
+    mapScreenPointToStagePoint,
+} from "./features/live2d/desktop-cursor.js";
 import { createTtsModule } from "./features/tts.js";
 import { DEFAULT_STAGE_EFFECT_SETTINGS, STAGE_EFFECTS_STORAGE_KEY } from "./features/live2d/constants.js";
 import {
@@ -27,6 +31,9 @@ import {
 
 const DESKTOP_WEB_URL = "http://127.0.0.1:8000/web";
 const DESKTOP_ROUTE_URL = "http://127.0.0.1:8000/desktop";
+const DESKTOP_CURSOR_POLL_INTERVAL_MS = 33;
+
+let desktopCursorPollTimerId = 0;
 
 const status = createUiStatusController();
 const live2d = createLive2DModule({
@@ -85,6 +92,7 @@ async function initializeDesktopPage() {
         applyDesktopStageDefaults();
         live2d.initializePixiApplication();
         await live2d.loadLive2DModel(live2dConfig);
+        startDesktopCursorPolling();
 
         await tts.loadTtsOptions(config.tts);
         asr.applyAsrStatus(config.asr);
@@ -124,9 +132,58 @@ function wireDesktopEvents() {
     });
 
     window.addEventListener("beforeunload", () => {
+        stopDesktopCursorPolling();
         asr.handleBeforeUnload();
         tts.stopSpeechPlayback();
     });
+}
+
+function startDesktopCursorPolling() {
+    stopDesktopCursorPolling();
+
+    if (!hasUsableDesktopCursorBridge(window.echobotDesktop)) {
+        return;
+    }
+
+    desktopCursorPollTimerId = window.setInterval(() => {
+        void syncDesktopCursorFocus();
+    }, DESKTOP_CURSOR_POLL_INTERVAL_MS);
+}
+
+function stopDesktopCursorPolling() {
+    if (!desktopCursorPollTimerId) {
+        return;
+    }
+
+    window.clearInterval(desktopCursorPollTimerId);
+    desktopCursorPollTimerId = 0;
+}
+
+async function syncDesktopCursorFocus() {
+    if (
+        !hasUsableDesktopCursorBridge(window.echobotDesktop)
+        || !DOM.stageElement
+        || !appState.config?.live2d?.available
+    ) {
+        return;
+    }
+
+    const cursorState = await window.echobotDesktop.getGlobalCursorState();
+    if (!cursorState) {
+        return;
+    }
+
+    const stageRect = DOM.stageElement.getBoundingClientRect();
+    const stagePoint = mapScreenPointToStagePoint(
+        cursorState,
+        cursorState.windowBounds,
+        stageRect,
+    );
+    if (!stagePoint) {
+        return;
+    }
+
+    live2d.applyExternalFocusPoint(stagePoint.x, stagePoint.y);
 }
 
 function applyDesktopStageDefaults() {

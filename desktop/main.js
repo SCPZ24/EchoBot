@@ -174,6 +174,26 @@ ipcMain.handle("desktop:start-window-drag", async () => {
   mainWindow.focus();
 });
 
+ipcMain.handle("desktop:get-global-cursor-state", async () => {
+  if (!mainWindow) {
+    return null;
+  }
+
+  const cursorPoint = screen.getCursorScreenPoint();
+  const bounds = mainWindow.getBounds();
+
+  return {
+    cursorX: cursorPoint.x,
+    cursorY: cursorPoint.y,
+    windowBounds: {
+      x: bounds.x,
+      y: bounds.y,
+      width: bounds.width,
+      height: bounds.height,
+    },
+  };
+});
+
 app.whenReady().then(async () => {
   spawnBackend();
 
