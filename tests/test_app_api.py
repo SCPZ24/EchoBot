@@ -2291,6 +2291,62 @@ class AppApiTests(unittest.TestCase):
                 (workspace / ".echobot" / "HEARTBEAT.md").read_text(encoding="utf-8"),
             )
 
+    def test_desktop_routes_expose_minimal_desktop_ui(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            write_test_live2d_model(workspace)
+
+            app = create_app(
+                runtime_options=RuntimeOptions(
+                    workspace=workspace,
+                    no_tools=True,
+                    no_skills=True,
+                    no_memory=True,
+                    no_heartbeat=True,
+                ),
+                channel_config_path=workspace / ".echobot" / "channels.json",
+                context_builder=build_test_context,
+                tts_service_builder=build_test_tts_service,
+                asr_service_builder=build_test_asr_service,
+            )
+
+            with TestClient(app) as client:
+                page = client.get("/desktop")
+                config = client.get("/api/web/config")
+
+                self.assertEqual(200, page.status_code)
+                self.assertIn('id="desktop-stage"', page.text)
+                self.assertIn('data-desktop-transparent-stage="true"', page.text)
+                self.assertIn('id="live2d-canvas"', page.text)
+                self.assertIn('id="desktop-drag-button"', page.text)
+                self.assertIn('id="desktop-voice-button"', page.text)
+                self.assertIn('id="desktop-web-button"', page.text)
+                self.assertIn('class="desktop-tool-icon"', page.text)
+                web_index = page.text.index('id="desktop-web-button"')
+                voice_index = page.text.index('id="desktop-voice-button"')
+                drag_index = page.text.index('id="desktop-drag-button"')
+                self.assertLess(web_index, voice_index)
+                self.assertLess(voice_index, drag_index)
+                self.assertNotIn(">拖动块<", page.text)
+                self.assertNotIn(">语音服务<", page.text)
+                self.assertNotIn(">Web<", page.text)
+                self.assertIn('class="desktop-toolbar"', page.text)
+                self.assertIn('id="tts-provider-select"', page.text)
+                self.assertIn('id="voice-select"', page.text)
+                self.assertIn('id="asr-provider-select"', page.text)
+                self.assertIn('id="always-listen-checkbox"', page.text)
+                self.assertIn('id="prompt-input"', page.text)
+                self.assertIn('id="chat-form"', page.text)
+                self.assertNotIn('desktop-status-panel', page.text)
+                self.assertNotIn('id="session-sidebar-toggle"', page.text)
+                self.assertNotIn('id="role-sidebar-toggle"', page.text)
+                self.assertNotIn('id="runtime-panel"', page.text)
+                self.assertNotIn('id="heartbeat-panel"', page.text)
+                self.assertNotIn('id="live2d-drawer"', page.text)
+                self.assertIn('EchoBot Desktop Pet', page.text)
+                self.assertEqual(200, config.status_code)
+                self.assertTrue(config.json()["live2d"]["available"])
+
     def test_web_console_routes_expose_static_ui_and_live2d_assets(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir)

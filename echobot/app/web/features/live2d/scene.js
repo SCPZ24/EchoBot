@@ -8,6 +8,7 @@ import {
     DEFAULT_STAGE_RIM_LIGHT_POSITION,
     STAGE_PARTICLE_COUNT,
 } from "./constants.js";
+import { buildPixiApplicationOptions } from "./application-options.js";
 
 export function createLive2DSceneController(deps) {
     const {
@@ -440,13 +441,12 @@ export function createLive2DSceneController(deps) {
             throw new Error("Failed to load pixi-live2d-display");
         }
 
-        live2dState.pixiApp = new window.PIXI.Application({
-            view: document.getElementById("live2d-canvas"),
-            resizeTo: DOM.stageElement,
-            autoStart: true,
-            antialias: true,
-            backgroundAlpha: 0,
-        });
+        live2dState.pixiApp = new window.PIXI.Application(
+            buildPixiApplicationOptions({
+                view: document.getElementById("live2d-canvas"),
+                resizeTo: DOM.stageElement,
+            }),
+        );
         live2dState.live2dStage = live2dState.pixiApp.stage;
         live2dState.live2dStage.interactive = true;
         live2dState.live2dStage.hitArea = live2dState.pixiApp.screen;
